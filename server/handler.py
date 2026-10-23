@@ -72,6 +72,9 @@ async def start_server(model, view, port, host=""):
         port: Server listening port.
         host: Host address to bind to (default: 0.0.0.0)
     """
+    if not HAS_AIOHTTP:
+        raise RuntimeError("aiohttp is required to run the server. Install it via: pip install aiohttp")
+
     OptimizedRequestHandler._model = model
     OptimizedRequestHandler._view = view
     OptimizedRequestHandler._server_port = port
@@ -85,6 +88,15 @@ async def start_server(model, view, port, host=""):
     await runner.setup()
     site = web.TCPSite(runner, host or "", port)
     await site.start()
+
+    bind_addr = host if host else "0.0.0.0"
+    view.display_info(f"Server listening on http://{bind_addr}:{port}")
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+
 
 
 class OptimizedRequestHandler:
