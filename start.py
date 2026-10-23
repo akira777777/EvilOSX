@@ -333,8 +333,8 @@ def _create_model(args: argparse.Namespace) -> object:
 
 
 def _report_error(message: str) -> None:
-    LOGGER.error(message)
-    print("[ERROR] " + message, file=sys.stderr)
+    LOGGER.error("%s", message)
+    print("[ERROR] " + message, file=sys.stderr, flush=True)
 
 
 _ADDRESS_IN_USE_ERRNOS = frozenset({10048, 48, 98})
