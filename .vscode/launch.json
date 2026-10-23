@@ -1,105 +1,144 @@
 {
+    "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: Current File with Arguments",
+            "name": "EvilOSX: Server",
             "type": "debugpy",
             "request": "launch",
-            "program": "${file}",
+            "program": "${workspaceFolder}/start.py",
+            "args": [
+                "--port",
+                "1337"
+            ],
+            "cwd": "${workspaceFolder}",
             "console": "integratedTerminal",
-            "args": "${command:pickArgs}"
-        },
-        {
-            "name": "Python Debugger: Current File with Arguments",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal",
-            "args": "${command:pickArgs}"
-        },
-        {
-            "command": "npm start",
-            "name": "Run npm start",
-            "request": "launch",
-            "type": "node-terminal"
-        },
-        {
-            "type": "node",
-            "request": "attach",
-            "name": "Containers: Attach to Node",
-            "remoteRoot": "/usr/src/app"
-        },
-        {
-            "name": "Containers .NET Attach (Preview)",
-            "type": "docker",
-            "request": "attach",
-            "platform": "netCore",
-            "sourceFileMap": {
-                "/src": "${workspaceFolder}"
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "presentation": {
+                "group": "1-Server",
+                "order": 1
             }
         },
         {
-            "name": "Attach to Chrome",
-            "port": 9222,
-            "request": "attach",
-            "type": "chrome",
-            "webRoot": "${workspaceFolder}"
+            "name": "EvilOSX: Server (custom arguments)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/start.py",
+            "args": "${command:pickArgs}",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "presentation": {
+                "group": "1-Server",
+                "order": 2
+            }
         },
         {
-            "name": "Launch Chrome",
+            "name": "EvilOSX: Builder (generate launcher)",
+            "type": "debugpy",
             "request": "launch",
-            "type": "chrome",
-            "url": "http://localhost:8080",
-            "webRoot": "${workspaceFolder}"
+            "program": "${workspaceFolder}/start.py",
+            "args": [
+                "--builder",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "1337"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "presentation": {
+                "group": "1-Server",
+                "order": 3
+            }
         },
         {
-            "name": "Launch Chrome",
+            "name": "Python: Current File",
+            "type": "debugpy",
             "request": "launch",
-            "type": "chrome",
-            "url": "http://localhost:8080",
-            "webRoot": "${workspaceFolder}"
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "presentation": {
+                "group": "2-Scripts",
+                "order": 1
+            }
+        },
+        {
+            "name": "Python: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "args": "${command:pickArgs}",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "presentation": {
+                "group": "2-Scripts",
+                "order": 2
+            }
+        },
+        {
+            "name": "EvilOSX: nginx facade test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/test_nginx_facade.py",
+            "args": [
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "1337"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "presentation": {
+                "group": "3-Tests",
+                "order": 1
+            }
+        },
+        {
+            "name": "EvilOSX: nginx facade test (custom arguments)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/test_nginx_facade.py",
+            "args": "${command:pickArgs}",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "presentation": {
+                "group": "3-Tests",
+                "order": 2
+            }
         }
     ]
-} // {
-//     "version": "0.2.0",
-//     "configurations": [
-//         {
-//             "name": "Python: EvilOSX Server (start.py)",
-//             "type": "debugpy",
-//             "request": "launch",
-//             "program": "${workspaceFolder}/start.py",
-//             "args": [
-//                 "--port",
-//                 "1337"
-//             ],
-//             "console": "integratedTerminal",
-//             "justMyCode": true
-//         },
-//         {
-//             "name": "Python: Current File",
-//             "type": "debugpy",
-//             "request": "launch",
-//             "program": "${file}",
-//             "console": "integratedTerminal",
-//             "justMyCode": true
-//         },
-//         {
-//             "name": "Python: Test Nginx Facade",
-//             "type": "debugpy",
-//             "request": "launch",
-//             "program": "${workspaceFolder}/tools/test_nginx_facade.py",
-//             "console": "integratedTerminal",
-//             "justMyCode": true
-//         },
-//         {
-//             "name": "Python: Pytest All",
-//             "type": "debugpy",
-//             "request": "launch",
-//             "module": "pytest",
-//             "args": [
-//                 "."
-//             ],
-//             "console": "integratedTerminal",
-//             "justMyCode": false
-//         }
-//     ]
-// }
+}
