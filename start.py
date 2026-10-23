@@ -378,6 +378,8 @@ def run_server(args: argparse.Namespace) -> int:
     started = perf_counter()
     bind_host = args.host or ""
 
+    _check_port_available(bind_host, args.port)
+
     try:
         # An empty host binds every interface, as documented by start_server().
         asyncio.run(handler.start_server(model, view, args.port, bind_host))
