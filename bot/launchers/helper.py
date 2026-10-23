@@ -29,9 +29,10 @@ class LauncherABC:
 
     @abstractmethod
     def generate(self, stager):
+        # type: (str) -> tuple
         """
         :type stager: str
         :rtype: (str, str)
         :return A tuple containing the file extension and code of the launcher.
         """
-        pass
+        raise NotImplementedError

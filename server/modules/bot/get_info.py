@@ -4,12 +4,18 @@ __license__ = "GPLv3"
 
 import platform
 import subprocess
-from os import getuid
+
+try:
+    from os import getuid
+except ImportError:
+    # Not available on Windows; the bot only ever runs on macOS.
+    def getuid():
+        return 0
 
 
 def run_command(command):
     out, err = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-    output = out + err
+    output = (out + err).decode("utf-8", errors="replace")
 
     if len(output.split("\n")) == 2:
         # Single line response.
@@ -32,6 +38,9 @@ def get_model():
 
     if "does not exist" in output.lower():
         return model_key + " (running in virtual machine?)"
+    elif "=" not in output:
+        # PlistBuddy returned nothing useful (e.g. the key is missing).
+        return model_key
     else:
         return output.split("=")[1][1:]
 

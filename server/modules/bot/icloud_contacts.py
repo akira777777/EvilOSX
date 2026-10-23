@@ -3,8 +3,13 @@
 # All credits to manwhoami for his work on this.
 
 import base64
+def _py3b64(s):
+    import base64
+    return base64.b64encode(s if isinstance(s, bytes) else s.encode()).decode()
+
+
 import json
-import urllib2
+import urllib.request
 from os import path
 from xml.etree import ElementTree as ET
 
@@ -13,7 +18,7 @@ def get_card_links(dsid, token):
     url = 'https://p04-contacts.icloud.com/%s/carddavhome/card' % dsid
     headers = {
         'Depth': '1',
-        'Authorization': 'X-MobileMe-AuthToken %s' % base64.b64encode("%s:%s" % (dsid, token)),
+        'Authorization': 'X-MobileMe-AuthToken %s' % _py3b64("%s:%s" % (dsid, token)),
         'Content-Type': 'text/xml',
     }
     data = """<?xml version="1.0" encoding="UTF-8"?>
@@ -23,9 +28,9 @@ def get_card_links(dsid, token):
       </A:prop>
     </A:propfind>
     """
-    request = urllib2.Request(url, data, headers)
+    request = urllib.request.Request(url, data, headers)
     request.get_method = lambda: 'PROPFIND'  # Important!
-    response = urllib2.urlopen(request)
+    response = urllib.request.urlopen(request)
     zebra = ET.fromstring(response.read())
     returnedData = """<?xml version="1.0" encoding="UTF-8"?>
     <F:addressbook-multiget xmlns:F="urn:ietf:params:xml:ns:carddav">
@@ -44,12 +49,12 @@ def getCardData(dsid, token):
     url = 'https://p04-contacts.icloud.com/%s/carddavhome/card' % dsid
     headers = {
         'Content-Type': 'text/xml',
-        'Authorization': 'X-MobileMe-AuthToken %s' % base64.b64encode("%s:%s" % (dsid, token)),
+        'Authorization': 'X-MobileMe-AuthToken %s' % _py3b64("%s:%s" % (dsid, token)),
     }
     data = get_card_links(dsid, token)
-    request = urllib2.Request(url, data, headers)
+    request = urllib.request.Request(url, data, headers)
     request.get_method = lambda: 'REPORT'  # Important!
-    response = urllib2.urlopen(request)
+    response = urllib.request.urlopen(request)
     zebra = ET.fromstring(response.read())
 
     cards = []

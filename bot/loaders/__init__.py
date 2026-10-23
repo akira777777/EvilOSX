@@ -3,7 +3,16 @@
 __author__ = "Marten4n6"
 __license__ = "GPLv3"
 
-import imp
+try:
+    import imp as _imp_load
+except ImportError:
+    import importlib.util as _importlib
+    def _load_source(name, path):
+        spec = _importlib.spec_from_file_location(name, path)
+        module = _importlib.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    _imp_load = type("imp", (), {"load_source": staticmethod(_load_source)})()
 from os import path, listdir
 from zlib import compress
 
@@ -17,7 +26,7 @@ def _load_loader(loader_name):
     """
     # Going to use imp over importlib until python decides to remove it.
     module_path = path.realpath(path.join(path.dirname(__file__), loader_name, "loader.py"))
-    module = imp.load_source(loader_name, module_path)
+    module = _imp_load.load_source(loader_name, module_path)
 
     _loader_cache[loader_name] = module.Loader()
 

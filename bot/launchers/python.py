@@ -8,8 +8,9 @@ from textwrap import dedent
 
 class Launcher(LauncherABC):
     def generate(self, stager):
+        # Modern macOS has no /usr/bin/python; use env python3.
         return ("py", dedent("""\
-        #!/usr/bin/python
+        #!/usr/bin/env python3
         # -*- coding: utf-8 -*-
         import subprocess
         

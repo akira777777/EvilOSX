@@ -1,0 +1,4 @@
+  File "C:\Users\novra\Desktop\111\EvilOSX\bot\bot.py", line 245
+    if processed.startswith(b"
+                            ^
+SyntaxError: unterminated string literal (detected at line 245)

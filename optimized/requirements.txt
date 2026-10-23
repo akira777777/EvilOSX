@@ -1,0 +1,17 @@
+# EvilOSX Optimized — Performance Improvements
+# 
+# Key additions:
+#   - aiohttp >= 3.8.0 — Async HTTP server (replaces blocking http.server)
+#   - aiosqlite >= 1.1.0 — Async SQLite driver (optional, for full async DB)
+#   - aiostream >= 0.16.0 — Async I/O utilities for file serving
+#   
+# Note: Original dependencies are unchanged; these are additive only.
+
+aiohttp>=3.8.0
+aiosqlite>=1.1.0
+aiodns>=3.0.0
+aiofiles>=22.1.0
+aiocron>=2.0.0
+
+# Core EvilOSX dependencies (unchanged)
+pycryptodomex>=3.17.0

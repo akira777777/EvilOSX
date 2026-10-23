@@ -8,7 +8,7 @@ from os import listdir, path
 
 def run_command(command):
     out, err = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-    output = out + err
+    output = (out + err).decode("utf-8", errors="replace")
 
     if len(output.split("\n")) == 2:
         # Singe line response.
@@ -19,7 +19,12 @@ def run_command(command):
 
 def run(options):
     base_path = "/Users/%s/Library/Application Support/MobileSync/Backup/" % run_command("whoami")
-    backup_paths = listdir(base_path)
+
+    try:
+        backup_paths = listdir(base_path)
+    except OSError as ex:
+        print("No local backups found (%s)." % ex)
+        return
 
     if len(backup_paths) > 0:
         string_builder = "Looking for backups...\n"

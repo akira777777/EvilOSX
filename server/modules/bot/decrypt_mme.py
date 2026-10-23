@@ -26,7 +26,7 @@ def get_generation_time(token_value):
     # datetime object.
     try:
         token_c = token_value.replace("\"", "").replace("~", "=")
-        time_d = base64.b64decode(token_c).encode("hex").split("00000000")[1:]
+        time_d = binascii.hexlify(base64.b64decode(token_c)).decode("ascii").split("00000000")[1:]
         time_h = [x for x in time_d if not x.startswith("0")][0][:8]
         time_i = struct.unpack(">I", binascii.unhexlify(time_h))[0]
         gen_time = datetime.datetime.fromtimestamp(time_i)

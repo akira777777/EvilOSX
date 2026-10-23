@@ -9,7 +9,7 @@ from os import path
 
 def run_command(command):
     out, err = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
-    output = out + err
+    output = (out + err).decode("utf-8", errors="replace")
 
     if len(output.split("\n")) == 2:
         return output.replace("\n", "")
@@ -19,7 +19,11 @@ def run_command(command):
 
 def get_file_hash(file_path):
     """:return: The MD5 hash of the specified file path."""
-    return run_command("md5 " + path.realpath(file_path)).split(" = ")[1]
+    output = run_command("md5 " + path.realpath(file_path))
+
+    if " = " not in output:
+        return "unknown"
+    return output.split(" = ")[1]
 
 
 def upload_file(file_path, buffer_size):
@@ -55,13 +59,13 @@ def run(options):
             # Let the server know the output file is a zip file.
             options["response_options"]["output_name"] = options["response_options"]["output_name"] + ".zip"
 
-            print("Started|" + get_file_hash(zip_file))
+            print("Started|" + str(get_file_hash(zip_file)))
             upload_file(zip_file, buffer_size)
 
             print("[download] Finished.")
             run_command("rm -rf " + zip_file)
         else:
-            print("Started|" + get_file_hash(file_path))
+            print("Started|" + str(get_file_hash(file_path)))
             upload_file(file_path, buffer_size)
 
             print("[download] Finished.")

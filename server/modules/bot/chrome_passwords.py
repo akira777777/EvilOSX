@@ -15,11 +15,22 @@ import subprocess
 import tempfile
 
 try:
+    from hashlib import sha1
+except ImportError:  # pragma: no cover - Python < 2.5
+    from sha import sha as sha1
+
+try:
     xrange
 except NameError:
     # Python3 support.
     # noinspection PyShadowingBuiltins
     xrange = range
+
+try:
+    from itertools import izip
+except ImportError:
+    # Python3 support: itertools.izip is gone.
+    izip = zip
 
 
 def pbkdf2_bin(password, salt, iterations, keylen=16):
@@ -32,16 +43,16 @@ def pbkdf2_bin(password, salt, iterations, keylen=16):
     def _pseudorandom(x, mac=mac):
         h = mac.copy()
         h.update(x)
-        return map(ord, h.digest())
+        return [c for c in h.digest()]
 
     buf = []
     for block in xrange(1, -(-keylen // mac.digest_size) + 1):
         rv = u = _pseudorandom(salt + _pack_int(block))
         for i in xrange(iterations - 1):
-            u = _pseudorandom(''.join(map(chr, u)))
-            rv = itertools.starmap(operator.xor, itertools.izip(rv, u))
+            u = _pseudorandom(bytes(u))
+            rv = itertools.starmap(operator.xor, izip(rv, u))
         buf.extend(rv)
-    return ''.join(map(chr, buf))[:keylen]
+    return bytes(buf)[:keylen]
 
 
 try:
@@ -64,9 +75,11 @@ def chrome_decrypt(encrypted, safe_storage_key):
 
     iv = "".join(("20",) * 16)
     key = pbkdf2_hmac("sha1", safe_storage_key, b"saltysalt", 1003)[:16]
+    if isinstance(key, str):
+        key = key.encode("latin-1")
 
-    hex_key = binascii.hexlify(key)
-    hex_enc_password = base64.b64encode(encrypted[3:])
+    hex_key = binascii.hexlify(key).decode("ascii")
+    hex_enc_password = base64.b64encode(encrypted[3:]).decode("ascii")
 
     # Send any error messages to /dev/null to prevent screen bloating up
     # (any decryption errors will give a non-zero exit, causing exception)
