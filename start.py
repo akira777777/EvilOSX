@@ -351,6 +351,13 @@ def _is_address_in_use(error):
 
 def run_server(args):
     """Start the async server and block until it is stopped."""
+    try:
+        import aiohttp  # noqa: F401
+    except ImportError as error:
+        raise StartupError(
+            "aiohttp is required to run the server "
+            "(pip install aiohttp): {}".format(error))
+
     from server import handler  # late import keeps --help fast
 
     if not handler.HAS_AIOHTTP:
