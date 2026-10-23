@@ -425,9 +425,17 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.builder and not args.host:
-        parser.error("--host is required with --builder "
-                     "(the payload must know the server address)")
+    if args.builder:
+        if not args.host:
+            parser.error("--host is required with --builder "
+                         "(the payload must know the server address)")
+        # argparse never applies ``type`` to a default value, so --loader is
+        # validated here as well: a loader missing from bot/loaders then fails
+        # with exit code 2 instead of later inside PayloadFactory.
+        try:
+            args.loader = _loader_name(args.loader)
+        except argparse.ArgumentTypeError as error:
+            parser.error(str(error))
 
     _configure_logging(args.debug)
     if not args.no_banner:
