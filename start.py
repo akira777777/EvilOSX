@@ -346,12 +346,10 @@ def _is_address_in_use(error: BaseException) -> bool:
         return False
     # Windows places the Winsock code into ``winerror``; aiohttp/runtime also
     # keeps it in ``errno``. Manual reproductions (OSError(10048, ...)) put it
-    # in ``errno`` only, so check both plus the textual description.
+    # in ``errno`` only, so check by code only. This avoids locale-dependent
+    # text checks on translated OS error strings.
     code = getattr(error, "winerror", None) or getattr(error, "errno", None)
-    if code not in _ADDRESS_IN_USE_ERRNOS:
-        return False
-    text = str(error).lower()
-    return "address" in text or "socket" in text or "use" in text
+    return code in _ADDRESS_IN_USE_ERRNOS
 
 
 def run_server(args: argparse.Namespace) -> int:
