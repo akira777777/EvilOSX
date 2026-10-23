@@ -456,7 +456,6 @@ def main(argv: list[str] | None = None) -> int:
         _check_dependency("aiohttp", "aiohttp")
         return run_server(args)
     except StartupError as error:
-        LOGGER.error("startup failure: %s", error)
         _report_error(str(error))
         return EXIT_FAILURE
     except KeyboardInterrupt:
@@ -466,8 +465,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as error:  # top-level guard: report, do not dump a traceback
         if args.debug:
             raise
-        LOGGER.error("unexpected failure: %s (%s)", error, type(error).__name__)
-        _report_error(f"unexpected failure: {type(error).__name__}: {error} (re-run with --debug for a traceback)")
+        _report_error("unexpected failure: {}: {} (re-run with --debug for a "
+                      "traceback)".format(type(error).__name__, error))
         return EXIT_FAILURE
 
 
