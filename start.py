@@ -468,7 +468,9 @@ def main(argv=None):
 
     try:
         if args.builder:
+            _check_cryptodome()
             return run_builder(args)
+        _check_aiohttp()
         return run_server(args)
     except StartupError as error:
         _report_error(str(error))
@@ -483,6 +485,24 @@ def main(argv=None):
         _report_error("unexpected failure: {} (re-run with --debug for a "
                       "traceback)".format(error))
         return EXIT_FAILURE
+
+
+def _check_cryptodome():
+    try:
+        import Cryptodome.Cipher.AES  # noqa: F401
+    except ImportError as error:
+        raise StartupError(
+            "payload generation needs pycryptodomex "
+            "(pip install pycryptodomex): {}".format(error))
+
+
+def _check_aiohttp():
+    try:
+        import aiohttp  # noqa: F401
+    except ImportError as error:
+        raise StartupError(
+            "aiohttp is required to run the server "
+            "(pip install aiohttp): {}".format(error))
 
 
 if __name__ == "__main__":
