@@ -63,7 +63,7 @@ class _ModuleViewAdapter:
             self._view.output("-" * 5)
 
 
-async def start_server(model, view, port, host=""):
+async def start_server(model, view, port: int, host: str = "") -> None:
     """Start async HTTP server with optimized request handling.
 
     Args:
@@ -87,7 +87,13 @@ async def start_server(model, view, port, host=""):
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host or "", port)
-    await site.start()
+
+    try:
+        await site.start()
+    except OSError as error:
+        if getattr(error, "winerror", None) in (10048,) or getattr(error, "errno", None) in (48, 98):
+            view.display_error(f"port {port} is already in use (try another --port)")
+        raise
 
     bind_addr = host if host else "0.0.0.0"
     view.display_info(f"Server listening on http://{bind_addr}:{port}")
