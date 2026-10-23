@@ -16,11 +16,14 @@ pass ``--debug`` to get verbose logging and full tracebacks.
 Exit codes: 0 success, 1 failure, 2 invalid arguments, 130 interrupted.
 """
 
+from __future__ import annotations
+
 __author__ = "Marten4n6"
 __license__ = "GPLv3"
 
 import argparse
 import asyncio
+import importlib
 import logging
 import os
 import sqlite3
@@ -65,14 +68,14 @@ MESSAGE_ATTENTION = "[\033[91m!\033[0m] "
 # The rest of the code base passes semantic tags ("info", "attention") as the
 # prefix of ViewABC.output(); map them to printable markers. Unknown prefixes
 # are rendered verbatim so no information is silently lost.
-_PREFIX_MARKERS = {
+_PREFIX_MARKERS: dict[str, str] = {
     "info": MESSAGE_INFO,
     "attention": MESSAGE_ATTENTION,
 }
 
 # The same markers without escape sequences, used when the stream is not a
 # terminal (pipes, log files, CI) or when the user set NO_COLOR.
-_PLAIN_PREFIX_MARKERS = {
+_PLAIN_PREFIX_MARKERS: dict[str, str] = {
     "info": "[I] ",
     "attention": "[!] ",
 }
@@ -82,33 +85,31 @@ class StartupError(Exception):
     """A configuration or environment problem that aborts startup cleanly."""
 
 
-def _port(value):
+def _port(value: str) -> int:
     """argparse type: a usable TCP port."""
     try:
         port = int(value)
     except (TypeError, ValueError):
-        raise argparse.ArgumentTypeError("expected an integer, got {!r}".format(value))
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}")
 
     if not 1 <= port <= 65535:
-        raise argparse.ArgumentTypeError(
-            "port must be between 1 and 65535, got {}".format(port))
+        raise argparse.ArgumentTypeError(f"port must be between 1 and 65535, got {port}")
     return port
 
 
-def _positive_int(value):
+def _positive_int(value: str) -> int:
     """argparse type: an integer greater than zero."""
     try:
         number = int(value)
     except (TypeError, ValueError):
-        raise argparse.ArgumentTypeError("expected an integer, got {!r}".format(value))
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}")
 
     if number < 1:
-        raise argparse.ArgumentTypeError(
-            "expected a positive integer, got {}".format(number))
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {number}")
     return number
 
 
-def available_loaders():
+def available_loaders() -> list[str]:
     """Names of the loaders that ship an ``install.py``, sorted."""
     if not LOADERS_DIR.is_dir():
         return []
@@ -116,7 +117,7 @@ def available_loaders():
                   if (entry / "install.py").is_file())
 
 
-def _loader_name(value):
+def _loader_name(value: str) -> str:
     """argparse type: a loader directory that exists under bot/loaders."""
     loaders = available_loaders()
 
@@ -127,7 +128,7 @@ def _loader_name(value):
     return value
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     """Build the command line parser (kept separate so it can be unit tested)."""
     parser = argparse.ArgumentParser(
         prog="start.py",
@@ -167,23 +168,23 @@ def build_parser():
     return parser
 
 
-def _timestamp():
+def _timestamp() -> str:
     """Current wall-clock time, formatted for output lines."""
     return datetime.now().strftime("%H:%M:%S")
 
 
-def _single_line(value):
+def _single_line(value: object) -> str:
     """Coerce ``value`` to one printable line without a trailing newline."""
     text = value if isinstance(value, str) else str(value)
     return text.rstrip("\r\n")
 
 
-def _stream_supports_colour(stream):
+def _stream_supports_colour(stream: object) -> bool:
     """True when ANSI escape sequences are safe to write to ``stream``."""
     if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
         return False
     try:
-        return bool(stream.isatty())
+        return stream.isatty()
     except (AttributeError, ValueError):
         return False  # detached stream, or a file-like object without isatty()
 
@@ -191,7 +192,7 @@ def _stream_supports_colour(stream):
 class ConsoleView(ViewABC):
     """Prints server events to a stream; implements the ViewABC contract."""
 
-    def __init__(self, stream=None, colour=None):
+    def __init__(self, stream: object | None = None, colour: bool | None = None) -> None:
         self._stream = stream if stream is not None else sys.stdout
         if colour is None:
             colour = _stream_supports_colour(self._stream)
@@ -201,25 +202,24 @@ class ConsoleView(ViewABC):
         # concurrent writes from interleaving inside a single line.
         self._lock = Lock()
 
-    def output(self, line, prefix=""):
+    def output(self, line: object, prefix: object = "") -> None:
         """Print one timestamped line, colourising known prefixes."""
         self._write([self._format(line, prefix)])
 
-    def _format(self, line, prefix, stamp=None):
+    def _format(self, line: object, prefix: object, stamp: str | None = None) -> str:
         """Render one ``[HH:MM:SS] <marker><line>`` string."""
         return "[{}] {}{}".format(
             stamp or _timestamp(), self._marker(prefix), _single_line(line))
 
-    def _marker(self, prefix):
+    def _marker(self, prefix: object) -> str:
         """Printable marker for a semantic tag; unknown tags pass through."""
         if not prefix:
             return ""
 
-        try:
-            tag = prefix.strip().lower()
-        except (AttributeError, TypeError):
-            tag = None  # not a string-like prefix, render it as it is
+        if not isinstance(prefix, str):
+            return f"{prefix} "
 
+        tag = prefix.strip().lower()
         marker = self._markers.get(tag)
         if marker is not None:
             return marker
@@ -227,7 +227,7 @@ class ConsoleView(ViewABC):
         text = str(prefix)
         return text if text.endswith(" ") else text + " "
 
-    def _write(self, lines):
+    def _write(self, lines: list[str]) -> None:
         """Write all ``lines`` with a single flush; never raise to the caller."""
         payload = "".join(line + "\n" for line in lines)
         with self._lock:
@@ -239,14 +239,14 @@ class ConsoleView(ViewABC):
                 # tearing down the server loop.
                 LOGGER.debug("console view is not writable: %s", error)
 
-    def display_info(self, text):
+    def display_info(self, text: object) -> None:
         """Used by :func:`server.handler.start_server` for status messages."""
         self.output(text, "info")
 
-    def display_error(self, text):
+    def display_error(self, text: object) -> None:
         self.output(text, "attention")
 
-    def on_response(self, response):
+    def on_response(self, response: str) -> None:
         # One timestamp and one write for the whole block: a large module
         # response would otherwise cost a flush per line.
         stamp = _timestamp()
@@ -254,20 +254,20 @@ class ConsoleView(ViewABC):
         body = _single_line(response).splitlines()
         self._write([head + "-" * 5] + [head + line for line in body])
 
-    def on_bot_added(self, bot):
+    def on_bot_added(self, bot: object) -> None:
         self.output("Bot joined: {}@{} ({}).".format(
             bot.username, bot.hostname, bot.uid), "info")
 
-    def on_bot_removed(self, bot):
+    def on_bot_removed(self, bot: object) -> None:
         self.output("Bot removed: {}@{} ({}).".format(
             bot.username, bot.hostname, bot.uid), "info")
 
-    def on_bot_path_change(self, bot):
+    def on_bot_path_change(self, bot: object) -> None:
         self.output("Bot path changed: {}@{} -> {}.".format(
             bot.username, bot.hostname, bot.local_path), "info")
 
 
-def _configure_stdio():
+def _configure_stdio() -> None:
     """Force UTF-8 output so the banner survives non-UTF-8 consoles."""
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -279,7 +279,7 @@ def _configure_stdio():
             pass  # stream does not support reconfiguration (e.g. a pipe)
 
 
-def _configure_logging(debug):
+def _configure_logging(debug: bool) -> None:
     """Keep stdout clean for the view; diagnostics go to stderr."""
     logging.basicConfig(
         level=logging.DEBUG if debug else logging.WARNING,
@@ -288,7 +288,7 @@ def _configure_logging(debug):
     )
 
 
-def _resolve_db_path(raw_path):
+def _resolve_db_path(raw_path: str | None) -> Path | None:
     """Validate ``--db-path`` early and return a resolved path (or None)."""
     if not raw_path:
         return None
@@ -300,15 +300,15 @@ def _resolve_db_path(raw_path):
 
     parent = db_path.parent
     if not parent.is_dir():
-        raise StartupError("database directory does not exist: {}".format(parent))
+        raise StartupError(f"database directory does not exist: {parent}")
     if db_path.exists() and not db_path.is_file():
-        raise StartupError("database path is not a file: {}".format(db_path))
+        raise StartupError(f"database path is not a file: {db_path}")
     if not os.access(str(parent), os.W_OK):
-        raise StartupError("database directory is not writable: {}".format(parent))
+        raise StartupError(f"database directory is not writable: {parent}")
     return db_path
 
 
-def _create_model(args):
+def _create_model(args: argparse.Namespace) -> object:
     """Build the model, applying ``--db-path`` and ``--cache-size``."""
     from server.model import Model
 
@@ -321,21 +321,25 @@ def _create_model(args):
             cache_size=args.cache_size,
         )
     except (OSError, sqlite3.Error) as error:
-        raise StartupError("cannot open database {}: {}".format(
-            db_path or "<default>", error))
+        raise StartupError(f"cannot open database {db_path or '<default>'}: {error}")
 
-    LOGGER.debug("model ready in %.0f ms (db=%s, cache-size=%s)",
-                 (perf_counter() - started) * 1000.0,
-                 db_path or "<default>",
-                 args.cache_size or "<default>")
+    LOGGER.debug(
+        "model ready in %.0f ms (db=%s, cache-size=%s)",
+        (perf_counter() - started) * 1000.0,
+        db_path or "<default>",
+        args.cache_size or "<default>",
+    )
     return model
 
 
-def _report_error(message):
-    print("[ERROR] {}".format(message), file=sys.stderr)
+def _report_error(message: str) -> None:
+    LOGGER.error(message)
 
 
-def _is_address_in_use(error):
+_ADDRESS_IN_USE_ERRNOS = frozenset({10048, 48, 98})
+
+
+def _is_address_in_use(error: BaseException) -> bool:
     """True when ``error`` means the bind address is already occupied."""
     if not isinstance(error, OSError):
         return False
@@ -343,38 +347,30 @@ def _is_address_in_use(error):
     # keeps it in ``errno``. Manual reproductions (OSError(10048, ...)) put it
     # in ``errno`` only, so check both plus the textual description.
     code = getattr(error, "winerror", None) or getattr(error, "errno", None)
-    if code not in (10048, 48, 98):
+    if code not in _ADDRESS_IN_USE_ERRNOS:
         return False
     text = str(error).lower()
     return "address" in text or "socket" in text or "use" in text
 
 
-def run_server(args):
+def run_server(args: argparse.Namespace) -> int:
     """Start the async server and block until it is stopped."""
-    try:
-        import aiohttp  # noqa: F401
-    except ImportError as error:
-        raise StartupError(
-            "aiohttp is required to run the server "
-            "(pip install aiohttp): {}".format(error))
-
     from server import handler  # late import keeps --help fast
 
     if not handler.HAS_AIOHTTP:
-        raise StartupError(
-            "aiohttp is required to run the server (pip install aiohttp)")
+        raise StartupError("aiohttp is required to run the server (pip install aiohttp)")
 
     model = _create_model(args)
     view = ConsoleView()
     started = perf_counter()
+    bind_host = args.host or ""
 
     try:
         # An empty host binds every interface, as documented by start_server().
-        asyncio.run(handler.start_server(model, view, args.port, args.host or ""))
+        asyncio.run(handler.start_server(model, view, args.port, bind_host))
     except OSError as error:
         if _is_address_in_use(error):
-            raise StartupError(
-                "port {} is already in use (try --port <other>)".format(args.port))
+            raise StartupError(f"port {args.port} is already in use (try --port <other>)")
         raise
     finally:
         # Bot updates are batched in memory; never drop them on shutdown.
@@ -383,29 +379,21 @@ def run_server(args):
         except Exception:  # shutdown must not mask the original error
             LOGGER.exception("failed to flush pending database writes")
 
-    view.output("Server stopped after {:.1f}s.".format(perf_counter() - started), "info")
+    view.output(f"Server stopped after {perf_counter() - started:.1f}s.", "info")
     return EXIT_OK
 
 
-def run_builder(args):
+def run_builder(args: argparse.Namespace) -> int:
     """Write a stage-1 launcher for one new bot into ``--output-dir``."""
-    try:
-        from Cryptodome.Cipher import AES  # noqa: F401
-    except ImportError as error:
-        raise StartupError(
-            "payload generation needs pycryptodomex "
-            "(pip install pycryptodomex): {}".format(error))
-
     from server.model import PayloadFactory
 
     output_dir = Path(args.output_dir).expanduser()
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as error:
-        raise StartupError("cannot create output directory {}: {}".format(
-            output_dir, error))
+        raise StartupError(f"cannot create output directory {output_dir}: {error}")
     if not output_dir.is_dir():
-        raise StartupError("output path is not a directory: {}".format(output_dir))
+        raise StartupError(f"output path is not a directory: {output_dir}")
 
     bot_uid = str(uuid4())
     payload_options = {"host": args.host, "port": args.port}
@@ -417,20 +405,16 @@ def run_builder(args):
     try:
         payload = PayloadFactory().create_payload(
             bot_uid, payload_options, loader_options)
-    except ImportError as error:
-        raise StartupError(
-            "payload generation needs pycryptodomex "
-            "(pip install pycryptodomex): {}".format(error))
     except (OSError, KeyError) as error:
-        raise StartupError("payload generation failed: {}".format(error))
+        raise StartupError(f"payload generation failed: {error}")
 
-    launcher_path = output_dir / "Launcher-{}.py".format(bot_uid[:8])
+    launcher_path = output_dir / f"Launcher-{bot_uid[:8]}.py"
     try:
         # Explicit encoding and LF: the target is macOS, the host may be Windows.
         with launcher_path.open("w", encoding="utf-8", newline="\n") as launcher:
             launcher.write(payload)
     except OSError as error:
-        raise StartupError("cannot write {}: {}".format(launcher_path, error))
+        raise StartupError(f"cannot write {launcher_path}: {error}")
 
     try:
         # Owner-only access, in one code path for every platform: Windows only
@@ -439,19 +423,17 @@ def run_builder(args):
         # that static analysis reports as dead code for the other OS.
         launcher_path.chmod(0o700)
     except OSError as error:
-        raise StartupError(
-            "cannot set permissions on {}: {}".format(launcher_path, error))
+        raise StartupError(f"cannot set permissions on {launcher_path}: {error}")
 
     print()
-    print("[INFO] Launcher generated: {}".format(launcher_path))
-    print("[INFO] Bot UID: {}".format(bot_uid))
-    print("[INFO] Server: {}:{}".format(args.host, args.port))
-    print("[INFO] Loader: {} (program directory: {})".format(
-        args.loader, args.program_directory))
+    print(f"[INFO] Launcher generated: {launcher_path}")
+    print(f"[INFO] Bot UID: {bot_uid}")
+    print(f"[INFO] Server: {args.host}:{args.port}")
+    print(f"[INFO] Loader: {args.loader} (program directory: {args.program_directory})")
     return EXIT_OK
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     """Parse arguments, dispatch to a mode and return a process exit code."""
     _configure_stdio()
 
@@ -468,11 +450,12 @@ def main(argv=None):
 
     try:
         if args.builder:
-            _check_cryptodome()
+            _check_dependency("Cryptodome.Cipher.AES", "pycryptodomex")
             return run_builder(args)
-        _check_aiohttp()
+        _check_dependency("aiohttp", "aiohttp")
         return run_server(args)
     except StartupError as error:
+        LOGGER.error("startup failure: %s", error)
         _report_error(str(error))
         return EXIT_FAILURE
     except KeyboardInterrupt:
@@ -482,27 +465,20 @@ def main(argv=None):
     except Exception as error:  # top-level guard: report, do not dump a traceback
         if args.debug:
             raise
-        _report_error("unexpected failure: {} (re-run with --debug for a "
-                      "traceback)".format(error))
+        LOGGER.error("unexpected failure: %s (%s)", error, type(error).__name__)
+        _report_error(f"unexpected failure: {type(error).__name__}: {error} (re-run with --debug for a traceback)")
         return EXIT_FAILURE
 
 
-def _check_cryptodome():
+def _check_dependency(module_name: str, package_name: str) -> None:
+    """Ensure ``module_name`` can be imported; raise ``StartupError`` otherwise."""
     try:
-        import Cryptodome.Cipher.AES  # noqa: F401
+        importlib.import_module(module_name)
     except ImportError as error:
         raise StartupError(
-            "payload generation needs pycryptodomex "
-            "(pip install pycryptodomex): {}".format(error))
-
-
-def _check_aiohttp():
-    try:
-        import aiohttp  # noqa: F401
-    except ImportError as error:
-        raise StartupError(
-            "aiohttp is required to run the server "
-            "(pip install aiohttp): {}".format(error))
+            f"{package_name} is required "
+            f"(pip install {package_name}): {error}"
+        )
 
 
 if __name__ == "__main__":
