@@ -89,6 +89,15 @@
       "lastAccessed": "2026-10-23T20:56:48.458Z",
       "accessCount": 0,
       "expiresAt": "2026-11-22T20:56:48.458Z"
+    },
+    "cmd-1792789064098": {
+      "key": "cmd-1792789064098",
+      "value": "{\"command\":\"$lineNumber = 0; Get-Content -LiteralPath 'start.py' | ForEach-Object { $lineNumber++; if ($lineNumber -ge 250 -and $lineNumber -le 381) { '{0,4}: {1}' -f $lineNumber, $_ } }\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:57:44.098Z",
+      "lastAccessed": "2026-10-23T20:57:44.098Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:57:44.098Z"
     }
   },
   "version": "3.0.0"
