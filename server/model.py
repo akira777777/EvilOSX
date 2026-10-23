@@ -505,9 +505,15 @@ class PayloadFactory:
         Returns:
             Base64-encoded encrypted string compatible with OpenSSL aes-256-cbc -d.
         """
-        from Cryptodome.Cipher import AES
-        from Cryptodome.Random import get_random_bytes
-        from Cryptodome.Hash import MD5
+        try:
+            from Cryptodome.Cipher import AES
+            from Cryptodome.Random import get_random_bytes
+            from Cryptodome.Hash import MD5
+        except ImportError as error:
+            raise ImportError(
+                "payload generation needs pycryptodomex "
+                "(pip install pycryptodomex): {}".format(error)
+            ) from error
         from base64 import b64encode
 
         # Derive key and IV using MD5 (fast, deterministic for same password)
