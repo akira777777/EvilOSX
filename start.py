@@ -339,15 +339,14 @@ def _is_address_in_use(error):
     """True when ``error`` means the bind address is already occupied."""
     if not isinstance(error, OSError):
         return False
-    win_error = getattr(error, "winerror", None)
-    if win_error == 10048:
-        return True
-    errno = getattr(error, "errno", None)
-    if errno == 48:  # EADDRINUSE on Windows/macOS
-        return True
-    if errno == 98:  # EADDRINUSE on Linux
-        return True
-    return False
+    # Windows places the Winsock code into ``winerror``; aiohttp/runtime also
+    # keeps it in ``errno``. Manual reproductions (OSError(10048, ...)) put it
+    # in ``errno`` only, so check both plus the textual description.
+    code = getattr(error, "winerror", None) or getattr(error, "errno", None)
+    if code not in (10048, 48, 98):
+        return False
+    text = str(error).lower()
+    return "address" in text or "socket" in text or "use" in text
 
 
 def run_server(args):
