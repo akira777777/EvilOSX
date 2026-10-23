@@ -88,14 +88,7 @@ async def start_server(model, view, port: int, host: str = "") -> None:
     await runner.setup()
     site = web.TCPSite(runner, host or "", port)
 
-    try:
-        await site.start()
-    except OSError as error:
-        code = getattr(error, "winerror", None) or getattr(error, "errno", None)
-        if code in (10048, 48, 98):
-            view.display_error(f"port {port} is already in use (try another --port)")
-            raise RuntimeError(f"port {port} is already in use") from error
-        raise
+    await site.start()
 
     bind_addr = host if host else "0.0.0.0"
     view.display_info(f"Server listening on http://{bind_addr}:{port}")

@@ -26,6 +26,7 @@ import asyncio
 import importlib
 import logging
 import os
+import socket
 import sqlite3
 import sys
 from datetime import datetime
@@ -350,6 +351,19 @@ def _is_address_in_use(error: BaseException) -> bool:
     # text checks on translated OS error strings.
     code = getattr(error, "winerror", None) or getattr(error, "errno", None)
     return code in _ADDRESS_IN_USE_ERRNOS
+
+
+def _check_port_available(host: str, port: int) -> None:
+    """Pre-flight check: raise ``StartupError`` when the bind address is occupied."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host or "0.0.0.0", port))
+    except OSError as error:
+        if _is_address_in_use(error):
+            raise StartupError(f"port {port} is already in use (try --port <other>)")
+        raise
+    finally:
+        sock.close()
 
 
 def run_server(args: argparse.Namespace) -> int:
