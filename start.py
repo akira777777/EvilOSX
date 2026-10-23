@@ -335,6 +335,21 @@ def _report_error(message):
     print("[ERROR] {}".format(message), file=sys.stderr)
 
 
+def _is_address_in_use(error):
+    """True when ``error`` means the bind address is already occupied."""
+    if not isinstance(error, OSError):
+        return False
+    win_error = getattr(error, "winerror", None)
+    if win_error == 10048:
+        return True
+    errno = getattr(error, "errno", None)
+    if errno == 48:  # EADDRINUSE on Windows/macOS
+        return True
+    if errno == 98:  # EADDRINUSE on Linux
+        return True
+    return False
+
+
 def run_server(args):
     """Start the async server and block until it is stopped."""
     from server import handler  # late import keeps --help fast
@@ -350,6 +365,11 @@ def run_server(args):
     try:
         # An empty host binds every interface, as documented by start_server().
         asyncio.run(handler.start_server(model, view, args.port, args.host or ""))
+    except OSError as error:
+        if _is_address_in_use(error):
+            raise StartupError(
+                "port {} is already in use (try --port <other>)".format(args.port))
+        raise
     finally:
         # Bot updates are batched in memory; never drop them on shutdown.
         try:
