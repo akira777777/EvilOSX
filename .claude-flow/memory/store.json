@@ -44,6 +44,33 @@
       "lastAccessed": "2026-10-23T20:32:52.957Z",
       "accessCount": 0,
       "expiresAt": "2026-11-22T20:32:52.957Z"
+    },
+    "cmd-1792788914110": {
+      "key": "cmd-1792788914110",
+      "value": "{\"command\":\"Get-Content -LiteralPath 'C:\\\\Users\\\\novra\\\\.codex\\\\attachments\\\\95d8f924-fa3a-4251-a814-3829b08e97b6\\\\pasted-text.txt' -Raw\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:55:14.110Z",
+      "lastAccessed": "2026-10-23T20:55:14.110Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:55:14.110Z"
+    },
+    "cmd-1792788942959": {
+      "key": "cmd-1792788942959",
+      "value": "{\"command\":\"Get-Content -LiteralPath 'C:\\\\Users\\\\novra\\\\.agents\\\\skills\\\\context7-mcp\\\\SKILL.md' -Raw\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:55:42.959Z",
+      "lastAccessed": "2026-10-23T20:55:42.959Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:55:42.959Z"
+    },
+    "cmd-1792788973762": {
+      "key": "cmd-1792788973762",
+      "value": "{\"command\":\"[System.IO.File]::ReadAllText('C:\\\\Users\\\\novra\\\\.agents\\\\skills\\\\context7-mcp\\\\SKILL.md')\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:56:13.762Z",
+      "lastAccessed": "2026-10-23T20:56:13.762Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:56:13.762Z"
     }
   },
   "version": "3.0.0"

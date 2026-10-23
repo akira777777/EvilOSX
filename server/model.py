@@ -64,10 +64,14 @@ class Model:
         db_path (str): Path to SQLite database file.
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: Optional[str] = None,
+                 cache_size: Optional[int] = None):
         self._db_path = path.realpath(path.join(
             path.dirname(__file__), path.pardir, "data", "EvilOSX.db"
         )) if db_path is None else path.realpath(db_path)
+
+        # Per-instance cache limit so callers can override _MAX_CACHE_SIZE.
+        self._max_cache_size = cache_size if cache_size else _MAX_CACHE_SIZE
 
         # Connection pool: pre-open connections to avoid open/close overhead
         self._pool_size = 2
@@ -137,7 +141,7 @@ class Model:
     def _cache_set(self, key: str, value) -> None:
         """Store a value with a fresh timestamp, honouring the size limit."""
         with self._cache_lock:
-            if len(self._cache) >= _MAX_CACHE_SIZE:
+            if len(self._cache) >= self._max_cache_size:
                 # Simple eviction: remove oldest entry
                 oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
                 del self._cache[oldest_key]
