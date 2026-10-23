@@ -1,54 +1,90 @@
 {
+    "version": "0.2.0",
     "configurations": [
         {
-            "type": "msedge",
-            "name": "Launch Microsoft Edge",
+            "name": "EvilOSX: Server",
+            "type": "debugpy",
             "request": "launch",
-            "runtimeArgs": [
-                "--remote-debugging-port=9222"
+            "program": "${workspaceFolder}/start.py",
+            "args": [
+                "--port",
+                "1337"
             ],
-            "url": "c:\\Users\\novra\\.antigravity-ide\\extensions\\ms-edgedevtools.vscode-edge-devtools-2.1.10-universal\\out\\startpage\\index.html", // Provide your project's url to finish configuring
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
             "presentation": {
-                "hidden": true
+                "group": "1-Server",
+                "order": 1
             }
         },
         {
-            "type": "msedge",
-            "name": "Launch Microsoft Edge in headless mode",
+            "name": "EvilOSX: Builder (generate launcher)",
+            "type": "debugpy",
             "request": "launch",
-            "runtimeArgs": [
-                "--headless",
-                "--remote-debugging-port=9222"
+            "program": "${workspaceFolder}/start.py",
+            "args": [
+                "--builder",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "1337"
             ],
-            "url": "c:\\Users\\novra\\.antigravity-ide\\extensions\\ms-edgedevtools.vscode-edge-devtools-2.1.10-universal\\out\\startpage\\index.html", // Provide your project's url to finish configuring
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
             "presentation": {
-                "hidden": true
+                "group": "1-Server",
+                "order": 2
             }
         },
         {
-            "type": "vscode-edge-devtools.debug",
-            "name": "Open Edge DevTools",
-            "request": "attach",
-            "url": "c:\\Users\\novra\\.antigravity-ide\\extensions\\ms-edgedevtools.vscode-edge-devtools-2.1.10-universal\\out\\startpage\\index.html", // Provide your project's url to finish configuring
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
             "presentation": {
-                "hidden": true
+                "group": "2-Scripts",
+                "order": 1
             }
-        }
-    ],
-    "compounds": [
-        {
-            "name": "Launch Edge Headless and attach DevTools",
-            "configurations": [
-                "Launch Microsoft Edge in headless mode",
-                "Open Edge DevTools"
-            ]
         },
         {
-            "name": "Launch Edge and attach DevTools",
-            "configurations": [
-                "Launch Microsoft Edge",
-                "Open Edge DevTools"
-            ]
+            "name": "EvilOSX: nginx facade test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/test_nginx_facade.py",
+            "args": [
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "1337"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUTF8": "1",
+                "PYTHONUNBUFFERED": "1"
+            },
+            "presentation": {
+                "group": "3-Tests",
+                "order": 1
+            }
         }
     ]
 }
