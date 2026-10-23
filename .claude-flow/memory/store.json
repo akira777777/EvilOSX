@@ -71,6 +71,15 @@
       "lastAccessed": "2026-10-23T20:56:13.762Z",
       "accessCount": 0,
       "expiresAt": "2026-11-22T20:56:13.762Z"
+    },
+    "cmd-1792788985500": {
+      "key": "cmd-1792788985500",
+      "value": "{\"command\":\"Write-Output '--- TCP 1337 listeners ---'; $listeners = @(Get-NetTCPConnection -LocalPort 1337 -State Listen -ErrorAction SilentlyContinue); if ($listeners.Count -eq 0) { Write-Output 'NONE' } else { foreach ($listener in $listeners) { $process = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue; [PSCustomObject]@{ LocalAddress = $listener.LocalAddress; LocalPort = $listener.LocalPort; PID = $listener.OwningProcess; Process = $process.ProcessName; Started = $process.StartTime } | Format-List } }; Write-Output '--- start.py lines 145-185 ---'; $lineNumber = 0; Get-Content -LiteralPath 'start.py' | ForEach-Object { $lineNumber++; if ($lineNumber -ge 145 -and $lineNumber -le 185) { '{0,4}: {1}' -f $lineNumber, $_ } }; Write-Output '--- handler.py lines 75-100 ---'; $lineNumber = 0; Get-Content -LiteralPath 'server\\\\handler.py' | ForEach-Object { $lineNumber++; if ($lineNumber -ge 75 -and $lineNumber -le 100) { '{0,4}: {1}' -f $lineNumber, $_ } }; Write-Output '--- launch args ---'; $launch = Get-Content -LiteralPath '.vscode\\\\launch.json' -Raw | ConvertFrom-Json; $launch.configurations | ForEach-Object { [PSCustomObject]@{ Name = $_.name; Program = $_.program; Module = $_.module; Args = ($_.args -join ' ') } } | Format-Table -AutoSize\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:56:25.500Z",
+      "lastAccessed": "2026-10-23T20:56:25.500Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:56:25.500Z"
     }
   },
   "version": "3.0.0"
