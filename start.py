@@ -382,6 +382,13 @@ def run_server(args):
 
 def run_builder(args):
     """Write a stage-1 launcher for one new bot into ``--output-dir``."""
+    try:
+        from Cryptodome.Cipher import AES  # noqa: F401
+    except ImportError as error:
+        raise StartupError(
+            "payload generation needs pycryptodomex "
+            "(pip install pycryptodomex): {}".format(error))
+
     from server.model import PayloadFactory
 
     output_dir = Path(args.output_dir).expanduser()
