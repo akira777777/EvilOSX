@@ -1,44 +1,44 @@
-{
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Python: EvilOSX Server (start.py)",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/start.py",
-            "args": [
-                "--port",
-                "1337"
-            ],
-            "console": "integratedTerminal",
-            "justMyCode": true
-        },
-        {
-            "name": "Python: Current File",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${file}",
-            "console": "integratedTerminal",
-            "justMyCode": true
-        },
-        {
-            "name": "Python: Test Nginx Facade",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/tools/test_nginx_facade.py",
-            "console": "integratedTerminal",
-            "justMyCode": true
-        },
-        {
-            "name": "Python: Pytest All",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "args": [
-                "."
-            ],
-            "console": "integratedTerminal",
-            "justMyCode": false
-        }
-    ]
-}
+// {
+//     "version": "0.2.0",
+//     "configurations": [
+//         {
+//             "name": "Python: EvilOSX Server (start.py)",
+//             "type": "debugpy",
+//             "request": "launch",
+//             "program": "${workspaceFolder}/start.py",
+//             "args": [
+//                 "--port",
+//                 "1337"
+//             ],
+//             "console": "integratedTerminal",
+//             "justMyCode": true
+//         },
+//         {
+//             "name": "Python: Current File",
+//             "type": "debugpy",
+//             "request": "launch",
+//             "program": "${file}",
+//             "console": "integratedTerminal",
+//             "justMyCode": true
+//         },
+//         {
+//             "name": "Python: Test Nginx Facade",
+//             "type": "debugpy",
+//             "request": "launch",
+//             "program": "${workspaceFolder}/tools/test_nginx_facade.py",
+//             "console": "integratedTerminal",
+//             "justMyCode": true
+//         },
+//         {
+//             "name": "Python: Pytest All",
+//             "type": "debugpy",
+//             "request": "launch",
+//             "module": "pytest",
+//             "args": [
+//                 "."
+//             ],
+//             "console": "integratedTerminal",
+//             "justMyCode": false
+//         }
+//     ]
+// }
