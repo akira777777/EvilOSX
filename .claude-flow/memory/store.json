@@ -26,6 +26,24 @@
       "lastAccessed": "2026-10-23T20:29:51.836Z",
       "accessCount": 0,
       "expiresAt": "2026-11-22T20:29:51.836Z"
+    },
+    "cmd-1792787541855": {
+      "key": "cmd-1792787541855",
+      "value": "{\"command\":\"$settings = Get-Content -LiteralPath '.vscode\\\\settings.json' -Raw | ConvertFrom-Json; $launch = Get-Content -LiteralPath '.vscode\\\\launch.json' -Raw | ConvertFrom-Json; Write-Output (\\\"SETTINGS_JSON_OK pytestEnabled={0} unittestEnabled={1}\\\" -f $settings.'python.testing.pytestEnabled', $settings.'python.testing.unittestEnabled'); Write-Output (\\\"LAUNCH_JSON_OK configurations={0}\\\" -f $launch.configurations.Count); Write-Output '--- relevant launch lines ---'; Select-String -LiteralPath '.vscode\\\\launch.json' -Pattern 'Python: EvilOSX Server|Python: Current File|program' | ForEach-Object { '{0}:{1}: {2}' -f $_.Path, $_.LineNumber, $_.Line.Trim() }; Write-Output '--- git diff for VS Code files ---'; git diff -- .vscode/launch.json .vscode/settings.json\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:32:21.855Z",
+      "lastAccessed": "2026-10-23T20:32:21.855Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:32:21.855Z"
+    },
+    "cmd-1792787572957": {
+      "key": "cmd-1792787572957",
+      "value": "{\"command\":\"$settingsText = Get-Content -LiteralPath '.vscode\\\\settings.json' -Raw; $launchText = Get-Content -LiteralPath '.vscode\\\\launch.json' -Raw; $null = $settingsText | ConvertFrom-Json; $launch = $launchText | ConvertFrom-Json; Write-Output 'SETTINGS_JSON_OK'; Write-Output (\\\"LAUNCH_JSON_OK configurations={0}\\\" -f $launch.configurations.Count); Select-String -LiteralPath '.vscode\\\\launch.json' -Pattern 'Python: EvilOSX Server|Python: Current File|program' | ForEach-Object { '{0}:{1}: {2}' -f $_.Path, $_.LineNumber, $_.Line.Trim() }\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:32:52.957Z",
+      "lastAccessed": "2026-10-23T20:32:52.957Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:32:52.957Z"
     }
   },
   "version": "3.0.0"
