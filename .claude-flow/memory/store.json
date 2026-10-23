@@ -98,6 +98,15 @@
       "lastAccessed": "2026-10-23T20:57:44.098Z",
       "accessCount": 0,
       "expiresAt": "2026-11-22T20:57:44.098Z"
+    },
+    "cmd-1792792641008": {
+      "key": "cmd-1792792641008",
+      "value": "{\"command\":\"$workspaceStart = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) 'start.py')); $listeners = @(Get-NetTCPConnection -LocalPort 1337 -State Listen -ErrorAction SilentlyContinue); if ($listeners.Count -eq 0) { Write-Output 'PORT_ALREADY_FREE'; exit 0 }; $pids = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique); foreach ($processId in $pids) { $processInfo = Get-CimInstance Win32_Process -Filter (\\\"ProcessId = {0}\\\" -f $processId) -ErrorAction Stop; $commandLine = [string]$processInfo.CommandLine; $isTarget = $processInfo.Name -eq 'python.exe' -and $commandLine -like \\\"*$workspaceStart*\\\" -and $commandLine -like '*--port 1337*'; if (-not $isTarget) { throw \\\"Refusing to stop PID $processId because it is not the verified workspace start.py process.\\\" }; Write-Output (\\\"STOPPING PID={0} NAME={1}\\\" -f $processInfo.ProcessId, $processInfo.Name); Stop-Process -Id $processId -ErrorAction Stop }; Start-Sleep -Milliseconds 500; $remaining = @(Get-NetTCPConnection -LocalPort 1337 -State Listen -ErrorAction SilentlyContinue); if ($remaining.Count -ne 0) { throw 'Port 1337 is still occupied after stopping the verified process.' }; Write-Output 'PORT_1337_FREE'\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T21:57:21.008Z",
+      "lastAccessed": "2026-10-23T21:57:21.008Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T21:57:21.008Z"
     }
   },
   "version": "3.0.0"
