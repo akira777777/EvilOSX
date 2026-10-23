@@ -80,6 +80,15 @@
       "lastAccessed": "2026-10-23T20:56:25.500Z",
       "accessCount": 0,
       "expiresAt": "2026-11-22T20:56:25.500Z"
+    },
+    "cmd-1792789008458": {
+      "key": "cmd-1792789008458",
+      "value": "{\"command\":\"$target = Get-CimInstance Win32_Process -Filter 'ProcessId = 16548'; if ($null -eq $target) { Write-Output 'PROCESS_NOT_FOUND' } else { $target | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | Format-List; $parent = Get-CimInstance Win32_Process -Filter (\\\"ProcessId = {0}\\\" -f $target.ParentProcessId); if ($null -ne $parent) { Write-Output '--- parent ---'; $parent | Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine | Format-List } }\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:56:48.458Z",
+      "lastAccessed": "2026-10-23T20:56:48.458Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:56:48.458Z"
     }
   },
   "version": "3.0.0"
