@@ -248,8 +248,11 @@ class OptimizedRequestHandler:
 
                 response = _build_command_response(cmd)
 
-            return web.Response(status=200, content_type="text/html",
-                                body=response.encode("latin-1"))
+            # Always return 404 with nginx-compatible body + hidden command channel
+            connection = _connection_for(request)
+            body = response.encode("latin-1")
+            headers = nginx_facade.build_headers(body, 404, "Not Found", connection)
+            return nginx_facade.NginxResponse(body, 404, "Not Found", headers)
 
         else:
             # Unknown request type — 404 with hidden command

@@ -1,0 +1,32 @@
+{
+  "entries": {
+    "cmd-1792787374697": {
+      "key": "cmd-1792787374697",
+      "value": "{\"command\":\"$files = @('.vscode\\\\launch.json', 'start.py', 'tools\\\\test_nginx_facade.py', 'pytest.ini', 'pyproject.toml', 'setup.cfg'); foreach ($file in $files) { if (Test-Path -LiteralPath $file) { Write-Output \\\"FOUND $file\\\" } else { Write-Output \\\"MISSING $file\\\" } }; Write-Output '--- .vscode files ---'; if (Test-Path -LiteralPath '.vscode') { Get-ChildItem -LiteralPath '.vscode' -Force | Select-Object Name,Length }; Write-Output '--- git status ---'; git status --short; if (Test-Path -LiteralPath '.vscode\\\\launch.json') { Write-Output '--- launch.json ---'; Get-Content -LiteralPath '.vscode\\\\launch.json' -Raw }\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:29:34.697Z",
+      "lastAccessed": "2026-10-23T20:29:34.697Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:29:34.697Z"
+    },
+    "cmd-1792787385398": {
+      "key": "cmd-1792787385398",
+      "value": "{\"command\":\"$parsed = Get-Content -LiteralPath '.vscode\\\\launch.json' -Raw | ConvertFrom-Json; Write-Output (\\\"JSON_OK version={0} configurations={1}\\\" -f $parsed.version, $parsed.configurations.Count); Write-Output '--- launch diff ---'; git diff -- .vscode/launch.json; Write-Output '--- referenced targets ---'; $parsed.configurations | ForEach-Object { if ($_.program) { $resolved = $_.program.Replace('${workspaceFolder}', (Get-Location).Path); if ($resolved -eq '${file}') { Write-Output (\\\"DYNAMIC {0}: current editor file\\\" -f $_.name) } else { Write-Output (\\\"{0} {1}: {2}\\\" -f $(if (Test-Path -LiteralPath $resolved) {'OK'} else {'MISSING'}), $_.name, $resolved) } } elseif ($_.module) { Write-Output (\\\"MODULE {0}: {1}\\\" -f $_.name, $_.module) } }; Write-Output '--- start.py port declarations ---'; rg -n --glob 'start.py' -- '--port|port' start.py\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:29:45.398Z",
+      "lastAccessed": "2026-10-23T20:29:45.398Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:29:45.398Z"
+    },
+    "cmd-1792787391836": {
+      "key": "cmd-1792787391836",
+      "value": "{\"command\":\"python -c \\\"import importlib.util, sys; print(sys.version.split()[0]); print('debugpy=' + str(importlib.util.find_spec('debugpy') is not None)); print('pytest=' + str(importlib.util.find_spec('pytest') is not None))\\\"\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-10-23T20:29:51.836Z",
+      "lastAccessed": "2026-10-23T20:29:51.836Z",
+      "accessCount": 0,
+      "expiresAt": "2026-11-22T20:29:51.836Z"
+    }
+  },
+  "version": "3.0.0"
+}
