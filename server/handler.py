@@ -91,8 +91,10 @@ async def start_server(model, view, port: int, host: str = "") -> None:
     try:
         await site.start()
     except OSError as error:
-        if getattr(error, "winerror", None) in (10048,) or getattr(error, "errno", None) in (48, 98):
+        code = getattr(error, "winerror", None) or getattr(error, "errno", None)
+        if code in (10048, 48, 98):
             view.display_error(f"port {port} is already in use (try another --port)")
+            raise RuntimeError(f"port {port} is already in use") from error
         raise
 
     bind_addr = host if host else "0.0.0.0"

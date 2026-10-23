@@ -371,6 +371,11 @@ def run_server(args: argparse.Namespace) -> int:
         if _is_address_in_use(error):
             raise StartupError(f"port {args.port} is already in use (try --port <other>)")
         raise
+    except RuntimeError as error:
+        message = str(error)
+        if "port" in message.lower() and "already in use" in message.lower():
+            raise StartupError(message)
+        raise
     finally:
         # Bot updates are batched in memory; never drop them on shutdown.
         try:
