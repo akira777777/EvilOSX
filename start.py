@@ -396,10 +396,18 @@ def run_builder(args):
         # Explicit encoding and LF: the target is macOS, the host may be Windows.
         with launcher_path.open("w", encoding="utf-8", newline="\n") as launcher:
             launcher.write(payload)
-        if os.name == "posix":
-            os.chmod(str(launcher_path), 0o700)
     except OSError as error:
         raise StartupError("cannot write {}: {}".format(launcher_path, error))
+
+    try:
+        # Owner-only access, in one code path for every platform: Windows only
+        # maps the read-only bit, which a freshly written file already has
+        # cleared, so the call is a no-op there instead of a platform branch
+        # that static analysis reports as dead code for the other OS.
+        launcher_path.chmod(0o700)
+    except OSError as error:
+        raise StartupError(
+            "cannot set permissions on {}: {}".format(launcher_path, error))
 
     print()
     print("[INFO] Launcher generated: {}".format(launcher_path))
