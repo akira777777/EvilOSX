@@ -27,6 +27,7 @@ import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from uuid import uuid4
 
@@ -67,6 +68,13 @@ MESSAGE_ATTENTION = "[\033[91m!\033[0m] "
 _PREFIX_MARKERS = {
     "info": MESSAGE_INFO,
     "attention": MESSAGE_ATTENTION,
+}
+
+# The same markers without escape sequences, used when the stream is not a
+# terminal (pipes, log files, CI) or when the user set NO_COLOR.
+_PLAIN_PREFIX_MARKERS = {
+    "info": "[I] ",
+    "attention": "[!] ",
 }
 
 
@@ -159,21 +167,77 @@ def build_parser():
     return parser
 
 
+def _timestamp():
+    """Current wall-clock time, formatted for output lines."""
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def _single_line(value):
+    """Coerce ``value`` to one printable line without a trailing newline."""
+    text = value if isinstance(value, str) else str(value)
+    return text.rstrip("\r\n")
+
+
+def _stream_supports_colour(stream):
+    """True when ANSI escape sequences are safe to write to ``stream``."""
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError):
+        return False  # detached stream, or a file-like object without isatty()
+
+
 class ConsoleView(ViewABC):
     """Prints server events to a stream; implements the ViewABC contract."""
 
-    def __init__(self, stream=None):
+    def __init__(self, stream=None, colour=None):
         self._stream = stream if stream is not None else sys.stdout
+        if colour is None:
+            colour = _stream_supports_colour(self._stream)
+        # Resolve the marker table once instead of on every line.
+        self._markers = _PREFIX_MARKERS if colour else _PLAIN_PREFIX_MARKERS
+        # The server may call the view from several tasks; the lock keeps
+        # concurrent writes from interleaving inside a single line.
+        self._lock = Lock()
 
     def output(self, line, prefix=""):
         """Print one timestamped line, colourising known prefixes."""
-        marker = _PREFIX_MARKERS.get(prefix)
-        if marker is None and prefix:
-            marker = prefix if prefix.endswith(" ") else prefix + " "
+        self._write([self._format(line, prefix)])
 
-        stamp = datetime.now().strftime("%H:%M:%S")
-        print("[{}] {}{}".format(stamp, marker or "", line),
-              file=self._stream, flush=True)
+    def _format(self, line, prefix, stamp=None):
+        """Render one ``[HH:MM:SS] <marker><line>`` string."""
+        return "[{}] {}{}".format(
+            stamp or _timestamp(), self._marker(prefix), _single_line(line))
+
+    def _marker(self, prefix):
+        """Printable marker for a semantic tag; unknown tags pass through."""
+        if not prefix:
+            return ""
+
+        try:
+            tag = prefix.strip().lower()
+        except (AttributeError, TypeError):
+            tag = None  # not a string-like prefix, render it as it is
+
+        marker = self._markers.get(tag)
+        if marker is not None:
+            return marker
+
+        text = str(prefix)
+        return text if text.endswith(" ") else text + " "
+
+    def _write(self, lines):
+        """Write all ``lines`` with a single flush; never raise to the caller."""
+        payload = "".join(line + "\n" for line in lines)
+        with self._lock:
+            try:
+                self._stream.write(payload)
+                self._stream.flush()
+            except (ValueError, OSError) as error:
+                # Closed stream or broken pipe: losing a line is better than
+                # tearing down the server loop.
+                LOGGER.debug("console view is not writable: %s", error)
 
     def display_info(self, text):
         """Used by :func:`server.handler.start_server` for status messages."""
@@ -183,9 +247,12 @@ class ConsoleView(ViewABC):
         self.output(text, "attention")
 
     def on_response(self, response):
-        self.output_separator()
-        for line in str(response).splitlines():
-            self.output(line)
+        # One timestamp and one write for the whole block: a large module
+        # response would otherwise cost a flush per line.
+        stamp = _timestamp()
+        head = "[{}] ".format(stamp)
+        body = _single_line(response).splitlines()
+        self._write([head + "-" * 5] + [head + line for line in body])
 
     def on_bot_added(self, bot):
         self.output("Bot joined: {}@{} ({}).".format(
